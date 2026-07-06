@@ -140,6 +140,25 @@ button.primary {
   padding: 0 12px;
 }
 
+.references-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mini-button {
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+button:disabled,
+.mini-button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
 .summary {
   padding: 10px 12px;
   color: var(--muted);
@@ -321,6 +340,61 @@ button.primary {
   display: grid;
   gap: 5px;
   padding: 0 9px 9px 41px;
+}
+
+.reference-url-list {
+  display: grid;
+  gap: 5px;
+  padding: 0 9px 8px 41px;
+}
+
+.reference-url-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 7px;
+  background: #fbfcf8;
+}
+
+.reference-url-item a {
+  min-width: 0;
+  color: var(--accent);
+  font: 600 11px/1.25 "Segoe UI", Arial, sans-serif;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.reference-url-item span {
+  border-radius: 999px;
+  padding: 3px 6px;
+  color: var(--muted);
+  background: #edf1ec;
+  font: 700 10px/1 "Segoe UI", Arial, sans-serif;
+  white-space: nowrap;
+}
+
+.reference-url-item.ok span {
+  color: #23632f;
+  background: var(--ok);
+}
+
+.reference-url-item.warning span {
+  color: #8a5d08;
+  background: var(--warning);
+}
+
+.reference-url-item.error span {
+  color: #91352f;
+  background: var(--missing);
+}
+
+.reference-url-item.pending span {
+  color: #225c69;
+  background: var(--format);
 }
 
 .reference-cite-link {

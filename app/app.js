@@ -1,4 +1,4 @@
-const editor = document.getElementById('editor')
+﻿const editor = document.getElementById('editor')
 const docxInput = document.getElementById('docxInput')
 const runBtn = document.getElementById('runBtn')
 const clearBtn = document.getElementById('clearBtn')
@@ -14,11 +14,14 @@ const sourceModalCitation = document.getElementById('sourceModalCitation')
 const sourceModalBody = document.getElementById('sourceModalBody')
 const referencesListEl = document.getElementById('referencesList')
 const referencesCountEl = document.getElementById('referencesCount')
+const validateUrlsBtn = document.getElementById('validateUrlsBtn')
 
 let occurrences = []
 let activeFilter = 'todos'
 let activeOccurrenceId = null
 let ultimoResultado = null
+let urlValidationState = {}
+let urlValidationRunning = false
 
 const YEAR_RE = /(?:19|20)\d{2}[a-z]?/i
 const YEAR_GLOBAL_RE = /(?:19|20)\d{2}[a-z]?/gi
@@ -103,6 +106,8 @@ function stripMarks() {
   occurrences = []
   activeOccurrenceId = null
   ultimoResultado = null
+  urlValidationState = {}
+  urlValidationRunning = false
   renderFilters()
   renderOccurrences()
   renderReferencesPanel([])
@@ -131,6 +136,23 @@ function pareceInicioReferencia(text) {
   if (/^[A-ZÀ-Þ][A-ZÀ-Þ\s.'’-]{2,}\.\s+/.test(t)) return true
   if (/^[A-ZÀ-Þ][A-ZÀ-Þ0-9\s.'’()&-]{2,}\.\s+/.test(t)) return true
   if (/^[A-ZÀ-Þ][A-Za-zÀ-ÿ.'’-]+,\s+[A-ZÀ-Þ]/.test(t)) return true
+
+  const institucional = t.match(/^([A-ZÀ-Þ][A-Za-zÀ-ÿ0-9\s'’()&-]{2,80})\.\s+(.+)/)
+  if (institucional) {
+    const autor = normalizarEspacos(institucional[1])
+    const resto = institucional[2]
+    const palavras = autor.split(/\s+/).filter(Boolean)
+    const termoProibido = /^(Disponível|Disponivel|Acesso|In|Revista|Editora|Tese|Dissertação|Dissertacao|Doutorado|Mestrado)\b/i
+    if (
+      palavras.length <= 8
+      && !/[,:;]/.test(autor)
+      && !termoProibido.test(autor)
+      && /(?:\b(?:19|20)\d{2}[a-z]?\b|Dispon[ií]vel\s+em|Acesso\s+em)/i.test(resto)
+    ) {
+      return true
+    }
+  }
+
   return false
 }
 
@@ -995,12 +1017,98 @@ function citacoesDaReferencia(refIndex) {
   return links
 }
 
+function limparUrl(raw) {
+  return String(raw || '')
+    .replace(/^<+/, '')
+    .replace(/[>\])}.,;:]+$/g, '')
+}
+
+function extrairUrls(text) {
+  const urls = []
+  const vistos = new Set()
+  const re = /\bhttps?:\/\/[^\s<>"'\])}]+/gi
+  let match
+  while ((match = re.exec(String(text || '')))) {
+    const url = limparUrl(match[0])
+    if (!url || vistos.has(url)) continue
+    vistos.add(url)
+    urls.push(url)
+  }
+  return urls
+}
+
+function urlsDasReferencias(referencias) {
+  const lista = []
+  ;(referencias || []).forEach(ref => {
+    extrairUrls(ref.text).forEach(url => {
+      lista.push({ refIndex: ref.index, url })
+    })
+  })
+  return lista
+}
+
+function statusUrlInfo(resultado) {
+  if (!resultado) return { cls: 'idle', label: 'Não validado' }
+  if (resultado.pending) return { cls: 'pending', label: 'Verificando...' }
+  if (resultado.ok) {
+    const extra = resultado.redirecionado ? ' com redirecionamento' : ''
+    return { cls: 'ok', label: `Online${resultado.status ? ` (${resultado.status})` : ''}${extra}` }
+  }
+  if (resultado.status === 403 || resultado.status === 401) {
+    return { cls: 'warning', label: `Não verificável (${resultado.status})` }
+  }
+  if (/ECONNRESET|socket hang up|network socket|connection reset/i.test(resultado.erro || '')) {
+    return { cls: 'warning', label: 'Não verificável' }
+  }
+  if (resultado.status) {
+    return { cls: 'error', label: `Problema (${resultado.status})` }
+  }
+  return { cls: 'error', label: resultado.erro ? `Erro: ${resultado.erro}` : 'Problema ao validar' }
+}
+
+function renderUrlStatus(refIndex, url) {
+  const resultado = urlValidationState[refIndex]?.[url]
+  const info = statusUrlInfo(resultado)
+  return `
+    <div class="reference-url-item ${info.cls}">
+      <a href="${escHtml(url)}" target="_blank" rel="noreferrer">${escHtml(url)}</a>
+      <span>${escHtml(info.label)}</span>
+    </div>
+  `
+}
+
+function renderReferenceUrls(ref) {
+  const urls = extrairUrls(ref.text)
+  if (!urls.length) return ''
+  return `
+    <div class="reference-url-list" aria-label="URLs da referência">
+      ${urls.map(url => renderUrlStatus(ref.index, url)).join('')}
+    </div>
+  `
+}
+
+function atualizarBotaoValidarUrls() {
+  if (!validateUrlsBtn) return
+  const urls = urlsDasReferencias(ultimoResultado?.referencias || [])
+  const disponivel = !!(window.refsBridge && typeof window.refsBridge.validarUrls === 'function')
+  validateUrlsBtn.disabled = urlValidationRunning || !urls.length || !disponivel
+  validateUrlsBtn.textContent = urlValidationRunning
+    ? 'Validando...'
+    : urls.length
+      ? `Validar URLs (${urls.length})`
+      : 'Validar URLs'
+  validateUrlsBtn.title = disponivel
+    ? (urls.length ? 'Validar URLs encontradas na lista de referências.' : 'Nenhuma URL encontrada nas referências.')
+    : 'Disponível apenas no app desktop.'
+}
+
 function renderReferencesPanel(referencias) {
   if (!referencesListEl || !referencesCountEl) return
   referencesCountEl.textContent = String(referencias.length || 0)
   if (!referencias.length) {
     referencesListEl.className = 'references-list empty'
     referencesListEl.textContent = 'A lista de referências aparecerá aqui após a conferência.'
+    atualizarBotaoValidarUrls()
     return
   }
 
@@ -1020,10 +1128,62 @@ function renderReferencesPanel(referencias) {
           <strong>${String(ref.index + 1).padStart(2, '0')}</strong>
           <span>${escHtml(ref.text)}</span>
         </button>
+        ${renderReferenceUrls(ref)}
         <div class="reference-citations">${links}</div>
       </article>
     `
   }).join('')
+  atualizarBotaoValidarUrls()
+}
+
+async function validarUrlsReferencias() {
+  const referencias = ultimoResultado?.referencias || []
+  const pares = urlsDasReferencias(referencias)
+  if (!pares.length || urlValidationRunning) return
+  if (!window.refsBridge || typeof window.refsBridge.validarUrls !== 'function') {
+    alert('A validação de URLs está disponível apenas no app desktop.')
+    return
+  }
+
+  urlValidationRunning = true
+  pares.forEach(({ refIndex, url }) => {
+    if (!urlValidationState[refIndex]) urlValidationState[refIndex] = {}
+    urlValidationState[refIndex][url] = { pending: true }
+  })
+  renderReferencesPanel(referencias)
+
+  try {
+    const urlsUnicas = Array.from(new Set(pares.map(item => item.url)))
+    const resultados = await window.refsBridge.validarUrls(urlsUnicas)
+    const porUrl = {}
+    ;(resultados || []).forEach(resultado => {
+      porUrl[resultado.url] = resultado
+    })
+    pares.forEach(({ refIndex, url }) => {
+      if (!urlValidationState[refIndex]) urlValidationState[refIndex] = {}
+      urlValidationState[refIndex][url] = porUrl[url] || {
+        url,
+        ok: false,
+        status: null,
+        finalUrl: url,
+        erro: 'Sem resposta da validação'
+      }
+    })
+  } catch (err) {
+    pares.forEach(({ refIndex, url }) => {
+      if (!urlValidationState[refIndex]) urlValidationState[refIndex] = {}
+      urlValidationState[refIndex][url] = {
+        url,
+        ok: false,
+        status: null,
+        finalUrl: url,
+        erro: err.message || String(err)
+      }
+    })
+  } finally {
+    urlValidationRunning = false
+    renderReferencesPanel(referencias)
+  }
 }
 
 function filteredOccurrences() {
@@ -1159,6 +1319,7 @@ docxInput.addEventListener('change', event => {
 
 runBtn.addEventListener('click', conferirReferencias)
 clearBtn.addEventListener('click', stripMarks)
+validateUrlsBtn?.addEventListener('click', validarUrlsReferencias)
 
 pasteModeBtn.addEventListener('click', async () => {
   stripMarks()
