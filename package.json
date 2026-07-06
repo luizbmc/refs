@@ -1,0 +1,36 @@
+{
+  "name": "refs",
+  "version": "0.1.0",
+  "description": "Conferência de citações autor-data e referências bibliográficas.",
+  "author": "Luiz BMC",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "package:win": "electron-builder --win",
+    "release:win": "electron-builder --win --publish never"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^29.1.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "br.com.luizbmc.refs",
+    "productName": "Refs",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "app/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

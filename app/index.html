@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Refs</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">R</span>
+      <div>
+        <h1>Refs</h1>
+        <p>Conferência de citações autor-data e lista final de referências.</p>
+      </div>
+    </div>
+    <div class="actions">
+      <label class="file-button">
+        Importar DOCX
+        <input id="docxInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+      </label>
+      <button id="pasteModeBtn" type="button">Colar texto</button>
+      <button id="runBtn" type="button" class="primary">Conferir referências</button>
+      <button id="clearBtn" type="button">Limpar marcações</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="panel-head">
+        <h2>Resultados</h2>
+        <span id="countBadge">0</span>
+      </div>
+      <div class="summary" id="summary">
+        Importe ou cole um texto para começar.
+      </div>
+      <div class="filters" id="filters"></div>
+      <div id="occurrences" class="occurrences empty">
+        Nenhuma conferência executada.
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <div id="dropZone" class="drop-zone">
+        <strong>Importe um DOCX</strong> ou cole o texto abaixo para começar.
+      </div>
+      <article id="editor" class="editor" contenteditable="true" spellcheck="true">
+        <p>Cole aqui um artigo para conferência de referências.</p>
+      </article>
+    </section>
+
+    <aside class="rightbar references-panel">
+      <div class="panel-head compact">
+        <h2>Lista de referências</h2>
+        <span id="referencesCount">0</span>
+      </div>
+      <div id="referencesList" class="references-list empty">
+        A lista de referências aparecerá aqui após a conferência.
+      </div>
+    </aside>
+  </main>
+
+  <div id="sourceModal" class="source-modal hidden" role="dialog" aria-modal="true" aria-labelledby="sourceModalTitle">
+    <div class="source-modal-backdrop" data-source-close></div>
+    <section class="source-modal-card">
+      <header class="source-modal-head">
+        <div>
+          <h2 id="sourceModalTitle">Fonte da referência</h2>
+          <p id="sourceModalCitation"></p>
+        </div>
+        <button id="sourceModalClose" type="button" class="source-modal-close" aria-label="Fechar">×</button>
+      </header>
+      <div id="sourceModalBody" class="source-modal-body"></div>
+    </section>
+  </div>
+
+  <script src="./vendor/mammoth.browser.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
