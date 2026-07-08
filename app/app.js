@@ -595,6 +595,11 @@ function extrairUnidadesCitacao(text) {
   return units
 }
 
+function ehCitacaoAnoPaginaSemAutor(text) {
+  return /^\s*(?:19|20)\d{2}[a-z]?\s*,\s*p\.?\s*\d+(?:\s*[-–—]\s*\d+)?(?:\s*,\s*[^;()]+)?\s*\.?\s*$/i
+    .test(String(text || ''))
+}
+
 function normalizarCitacoesInlineNosBlocos(blocks) {
   blocks.forEach(block => {
     block.querySelectorAll?.('em, i').forEach(el => {
@@ -764,6 +769,18 @@ function coletarCitacoes(bodyBlocks, referencias) {
       let start = match.index
       let display = match[0]
 
+      if (!units.length && ehCitacaoAnoPaginaSemAutor(inside)) {
+        const ano = (inside.match(YEAR_RE) || [''])[0].toLowerCase()
+        units = [{
+          raw: normalizarEspacos(inside),
+          authorsRaw: '',
+          authors: [],
+          ano,
+          autorAusente: true,
+        }]
+        issues.push('Citação com ano e página sem indicação de autor. Informe a autoria ou confira se a referência deve ser vinculada pelo contexto.')
+      }
+
       if (units.length <= 1 && /^[,;\s]*(?:19|20)\d{2}/i.test(inside)) {
         const autorAntes = encontrarAutorAntes(text, match.index)
         const ano = (inside.match(YEAR_RE) || [''])[0].toLowerCase()
@@ -874,6 +891,8 @@ function scoreReferencia(unit, ref, exigirAno) {
 }
 
 function vincularUnidade(unit, referencias) {
+  if (unit?.autorAusente) return { status: 'authorless', ref: null }
+
   const comAno = referencias
     .map(ref => ({ ref, score: scoreReferencia(unit, ref, true) }))
     .filter(item => item.score > 0)
@@ -891,6 +910,7 @@ function vincularUnidade(unit, referencias) {
 }
 
 function classeResultado(statuses) {
+  if (statuses.includes('authorless')) return 'authorless'
   if (statuses.length > 1 && statuses.includes('missing') && statuses.some(status => status !== 'missing')) {
     return 'partial'
   }
@@ -901,6 +921,7 @@ function classeResultado(statuses) {
 
 function textoStatus(status) {
   if (status === 'ok') return 'Encontrada'
+  if (status === 'authorless') return 'Autor ausente'
   if (status === 'partial') return 'Parcial'
   if (status === 'warning') return 'Ano divergente'
   if (status === 'format') return 'Checagem ABNT'
@@ -1346,6 +1367,7 @@ function renderSummary(resultado) {
   const ok = occurrences.filter(o => o.status === 'ok').length
   const partial = occurrences.filter(o => o.status === 'partial').length
   const warning = occurrences.filter(o => o.status === 'warning').length
+  const authorless = occurrences.filter(o => o.status === 'authorless').length
   const missing = occurrences.filter(o => o.status === 'missing').length
   const format = occurrences.filter(o => o.status === 'format').length
   const refs = resultado.referencias.length
@@ -1354,7 +1376,7 @@ function renderSummary(resultado) {
   const correcoes = correcoesAplicadas.length
   summaryEl.innerHTML = `
     <strong>${total}</strong> ocorrência(s): <strong>${citacoes}</strong> citação(ões) no texto, <strong>${refs}</strong> referência(s), ${heading}.<br>
-    Encontradas: <strong>${ok}</strong> · Parciais: <strong>${partial}</strong> · Ano divergente: <strong>${warning}</strong> · Ausentes: <strong>${missing}</strong> · Checagem ABNT: <strong>${format}</strong>${correcoes ? ` · Correções validadas: <strong>${correcoes}</strong>` : ''}
+    Encontradas: <strong>${ok}</strong> · Parciais: <strong>${partial}</strong> · Ano divergente: <strong>${warning}</strong> · Autor ausente: <strong>${authorless}</strong> · Ausentes: <strong>${missing}</strong> · Checagem ABNT: <strong>${format}</strong>${correcoes ? ` · Correções validadas: <strong>${correcoes}</strong>` : ''}
   `
   countBadge.textContent = String(total)
 }
@@ -1365,6 +1387,7 @@ function renderFilters() {
     ['ok', 'Encontradas'],
     ['partial', 'Parciais'],
     ['warning', 'Ano divergente'],
+    ['authorless', 'Autor ausente'],
     ['missing', 'Ausentes'],
     ['format', 'Checagem ABNT'],
   ]

@@ -8,6 +8,7 @@
   --ok: #cdeccf;
   --partial: #d8d3ff;
   --warning: #ffe1a8;
+  --authorless: #ffd6a8;
   --missing: #ffc7c2;
   --format: #cfe8f6;
   --active: #fff06b;
@@ -198,6 +199,11 @@ button:disabled,
   border-color: #d39735;
 }
 
+.filter.authorless {
+  background: var(--authorless);
+  border-color: #c77d2c;
+}
+
 .filter.missing {
   background: var(--missing);
   border-color: #d76f66;
@@ -242,6 +248,7 @@ button:disabled,
 .occurrence.ok { border-left-color: #70b577; }
 .occurrence.partial { border-left-color: #8d84d8; }
 .occurrence.warning { border-left-color: #d39735; }
+.occurrence.authorless { border-left-color: #c77d2c; }
 .occurrence.missing { border-left-color: #d76f66; }
 .occurrence.format { border-left-color: #5c98b7; }
 .occurrence.active { outline: 2px solid var(--active); }
@@ -503,6 +510,7 @@ button:disabled,
 }
 .ref-mark.partial { background: var(--partial); }
 .ref-mark.warning { background: var(--warning); }
+.ref-mark.authorless { background: var(--authorless); }
 .ref-mark.missing { background: var(--missing); }
 .ref-format {
   background: var(--format);
@@ -634,6 +642,7 @@ button:disabled,
 .source-item.ok { border-left-color: #70b577; }
 .source-item.partial { border-left-color: #8d84d8; }
 .source-item.warning { border-left-color: #d39735; }
+.source-item.authorless { border-left-color: #c77d2c; }
 .source-item.missing { border-left-color: #d76f66; }
 .source-item.format { border-left-color: #5c98b7; }
 
