@@ -764,6 +764,11 @@ button:disabled,
 .correction-actions .primary {
   border-color: #396f50;
   background: #dff0df;
+  color: #214532;
+}
+
+.correction-actions .primary:hover {
+  background: #cfe8d1;
 }
 
 .correction-actions span,
