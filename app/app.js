@@ -498,11 +498,47 @@ function problemasAutoresCitacao(unit, ref) {
   return issues
 }
 
+function palavrasNormalizadas(text) {
+  return normalizarTexto(text).split(/\s+/).filter(Boolean)
+}
+
+function distanciaEdicaoLimitada(a, b, limite) {
+  const left = String(a || '')
+  const right = String(b || '')
+  if (Math.abs(left.length - right.length) > limite) return limite + 1
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = [i]
+    let menorLinha = current[0]
+    for (let j = 1; j <= right.length; j += 1) {
+      const custo = left[i - 1] === right[j - 1] ? 0 : 1
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + custo,
+      )
+      menorLinha = Math.min(menorLinha, current[j])
+    }
+    if (menorLinha > limite) return limite + 1
+    for (let j = 0; j < current.length; j += 1) previous[j] = current[j]
+  }
+  return previous[right.length]
+}
+
+function contemPalavraSimilarNormalizada(text, word, limite = 1) {
+  const alvo = normalizarTexto(word)
+  if (alvo.length < 4) return false
+  return palavrasNormalizadas(text)
+    .some(candidate => candidate.length >= 4
+      && candidate[0] === alvo[0]
+      && distanciaEdicaoLimitada(candidate, alvo, limite) <= limite)
+}
+
 function problemaNomeSimilarAutorCitacao(unit, ref) {
   if (!ref) return ''
   for (const author of unit?.authors || []) {
     const words = author.split(/\s+/).filter(w => w.length > 1)
-    if (words.length < 3) continue
+    if (words.length < 2) continue
 
     const variantes = variantesAutorCitacao(author)
     const coincidenciaIntegral = variantes.some(variant => (
@@ -517,9 +553,12 @@ function problemaNomeSimilarAutorCitacao(unit, ref) {
       .filter(w => w.length >= 4)
       .filter(w => !sobrenome.split(/\s+/).includes(w))
     const nomeDistintivoHit = nomesDistintivos.some(w => contemTermoNormalizado(ref.normal, w))
+    const nomeSimilarHit = nomesDistintivos.some(w => contemPalavraSimilarNormalizada(ref.normal, w))
 
-    if (sobrenomeInicioHit && nomeDistintivoHit) {
-      return 'O nome do autor na citação está apenas similar ao nome na lista de referências; confira se há omissão ou variação de prenome/nome intermediário.'
+    if (sobrenomeInicioHit && (nomeDistintivoHit || nomeSimilarHit)) {
+      return nomeSimilarHit && !nomeDistintivoHit
+        ? 'O nome do autor na citação está quase igual ao nome da lista de referências; confira possível erro de grafia.'
+        : 'O nome do autor na citação está apenas similar ao nome na lista de referências; confira se há omissão ou variação de prenome/nome intermediário.'
     }
   }
   return ''
@@ -706,7 +745,8 @@ function melhorAutorNarrativo(autorAntes, ano, referencias) {
     if (!refScore) return
 
     const missingWords = palavrasDistintivasAutor(candidato.text)
-      .filter(word => !contemTermoNormalizado(refScore.ref.normal, word))
+      .filter(word => !contemTermoNormalizado(refScore.ref.normal, word)
+        && !contemPalavraSimilarNormalizada(refScore.ref.normal, word))
       .length
     const wordCount = normalizarTexto(candidato.text).split(/\s+/).filter(Boolean).length
     const rank = {
@@ -876,10 +916,11 @@ function scoreReferencia(unit, ref, exigirAno) {
     const palavrasDistintivas = words.filter(w => w.length >= 4)
     const nomesDistintivos = palavrasDistintivas.filter(w => !sobrenome.split(/\s+/).includes(w))
     const nomeDistintivoHit = nomesDistintivos.some(w => contemTermoNormalizado(ref.normal, w))
+    const nomeSimilarHit = nomesDistintivos.some(w => contemPalavraSimilarNormalizada(ref.normal, w))
     const autoriaComposta = words.length >= 3
-    if (autoriaComposta && !phraseHit && !varianteInicioHit && !(sobrenomeInicioHit && nomeDistintivoHit) && palavrasDistintivas.some(w => !contemTermoNormalizado(ref.normal, w))) continue
+    if (autoriaComposta && !phraseHit && !varianteInicioHit && !(sobrenomeInicioHit && (nomeDistintivoHit || nomeSimilarHit)) && palavrasDistintivas.some(w => !contemTermoNormalizado(ref.normal, w) && !contemPalavraSimilarNormalizada(ref.normal, w))) continue
     const wordHits = words.filter(w => contemTermoNormalizado(ref.normal, w)).length
-    if (phraseHit || inicioHit || varianteInicioHit || (sobrenomeInicioHit && nomeDistintivoHit)) {
+    if (phraseHit || inicioHit || varianteInicioHit || (sobrenomeInicioHit && (nomeDistintivoHit || nomeSimilarHit))) {
       hits += inicioHit ? 3 : 2
     } else if (!autoriaComposta && wordHits >= Math.min(words.length, 2)) {
       hits += 1
