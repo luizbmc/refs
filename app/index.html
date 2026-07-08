@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Refs</title>
+  <title>ABeNiTa</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark">R</span>
+      <img class="brand-logo" src="./logo.png" alt="ABeNiTa" />
       <div>
-        <h1>Refs</h1>
+        <h1>ABeNiTa</h1>
         <p>Conferência de citações autor-data e lista final de referências.</p>
       </div>
     </div>
@@ -22,6 +22,7 @@
       </label>
       <button id="pasteModeBtn" type="button">Colar texto</button>
       <button id="runBtn" type="button" class="primary">Conferir referências</button>
+      <button id="exportCorrectedBtn" type="button" disabled>Baixar DOCX corrigido</button>
       <button id="clearBtn" type="button">Limpar marcações</button>
     </div>
   </header>
@@ -79,6 +80,7 @@
   </div>
 
   <script src="./vendor/mammoth.browser.min.js"></script>
+  <script src="./orgaos-siglas.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

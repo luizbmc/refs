@@ -9,12 +9,14 @@ const filtersEl = document.getElementById('filters')
 const dropZone = document.getElementById('dropZone')
 const summaryEl = document.getElementById('summary')
 const sourceModal = document.getElementById('sourceModal')
+const sourceModalTitle = document.getElementById('sourceModalTitle')
 const sourceModalClose = document.getElementById('sourceModalClose')
 const sourceModalCitation = document.getElementById('sourceModalCitation')
 const sourceModalBody = document.getElementById('sourceModalBody')
 const referencesListEl = document.getElementById('referencesList')
 const referencesCountEl = document.getElementById('referencesCount')
 const validateUrlsBtn = document.getElementById('validateUrlsBtn')
+const exportCorrectedBtn = document.getElementById('exportCorrectedBtn')
 
 let occurrences = []
 let activeFilter = 'todos'
@@ -22,10 +24,19 @@ let activeOccurrenceId = null
 let ultimoResultado = null
 let urlValidationState = {}
 let urlValidationRunning = false
+let sourceModalOccurrenceId = null
+let sourceModalItem = null
+let correcoesAplicadas = []
+let comentariosAplicados = []
+let comentarioAutorPadrao = ''
+let importedDocxArrayBuffer = null
+let importedDocxName = ''
 
 const YEAR_RE = /(?:19|20)\d{2}[a-z]?/i
 const YEAR_GLOBAL_RE = /(?:19|20)\d{2}[a-z]?/gi
 const MESES_ABNT_RE = /(?:jan\.|fev\.|mar\.|abr\.|maio|jun\.|jul\.|ago\.|set\.|out\.|nov\.|dez\.)/i
+const DIA_ACESSO_ABNT_RE = /(?:1º|[2-9]|[12]\d|3[01])/
+const AGNOMES_AUTOR = ['FILHO', 'NETO', 'JUNIOR', 'JR', 'SOBRINHO']
 const ABNT_TIPOS = {
   livro: 'Livro/monografia',
   capitulo: 'Parte de monografia',
@@ -73,6 +84,30 @@ function normalizarEspacos(text) {
     .trim()
 }
 
+const ORGAOS_SIGLAS = (Array.isArray(window.REFS_ORGAOS_SIGLAS) ? window.REFS_ORGAOS_SIGLAS : [])
+  .map(item => ({
+    sigla: normalizarTexto(item.sigla),
+    nome: normalizarTexto(item.nome),
+  }))
+  .filter(item => item.sigla && item.nome)
+
+function textoNormalContemTermo(normalText, normalTerm) {
+  if (!normalText || !normalTerm) return false
+  return ` ${normalText} `.includes(` ${normalTerm} `)
+}
+
+function variantesInstitucionaisAutor(author) {
+  const normal = normalizarTexto(author)
+  if (!normal || !ORGAOS_SIGLAS.length) return []
+  const variantes = []
+  ORGAOS_SIGLAS.forEach(item => {
+    if (textoNormalContemTermo(normal, item.sigla) || textoNormalContemTermo(normal, item.nome)) {
+      variantes.push(item.sigla, item.nome)
+    }
+  })
+  return Array.from(new Set(variantes))
+}
+
 function normalizarParagrafoHtml(text) {
   const parts = String(text || '')
     .replace(/\r\n/g, '\n')
@@ -95,12 +130,17 @@ function textoBloco(el) {
 
 function stripMarks() {
   editor.querySelectorAll('span.ref-mark').forEach(mark => {
-    mark.replaceWith(document.createTextNode(mark.textContent || ''))
+    mark.replaceWith(...Array.from(mark.childNodes))
   })
   editor.querySelectorAll('.refs-heading').forEach(el => el.classList.remove('refs-heading'))
   editor.querySelectorAll('.ref-format').forEach(el => {
     el.classList.remove('ref-format', 'active')
     delete el.dataset.occurrenceId
+    el.removeAttribute('title')
+  })
+  editor.querySelectorAll('.ref-list-entry').forEach(el => {
+    el.classList.remove('ref-list-entry', 'active')
+    delete el.dataset.refIndex
   })
   editor.normalize()
   occurrences = []
@@ -114,12 +154,33 @@ function stripMarks() {
   renderSummary(null)
 }
 
+function atualizarEstadoExportacao() {
+  if (!exportCorrectedBtn) return
+  const pronto = !!importedDocxArrayBuffer && (correcoesAplicadas.length > 0 || comentariosAplicados.length > 0)
+  exportCorrectedBtn.disabled = !pronto
+  exportCorrectedBtn.title = pronto
+    ? 'Baixar uma cópia do DOCX com as correções e comentários validados.'
+    : 'Importe um DOCX e valide ao menos uma correção ou comentário para habilitar.'
+}
+
+function limparCorrecoesAplicadas() {
+  correcoesAplicadas = []
+  comentariosAplicados = []
+  window.refsCorrecoesAplicadas = correcoesAplicadas
+  window.refsComentariosAplicados = comentariosAplicados
+  atualizarEstadoExportacao()
+}
+
 function encontrarSecaoReferencias() {
   const blocks = blocosTexto()
-  const headingIndex = blocks.findIndex(el => {
-    const text = normalizarTexto(textoBloco(el))
-    return /^(REFERENCIAS|REFERENCIAS BIBLIOGRAFICAS|BIBLIOGRAFIA|REFERENCES)$/.test(text)
-  })
+  const candidatos = blocks
+    .map((el, index) => ({ el, index }))
+    .filter(item => pareceTituloSecaoReferencias(item.el))
+  const valido = candidatos.find(item => proximoBlocoPareceReferencia(blocks, item.index))
+  const fallback = candidatos.length === 1 && candidatos[0].index > blocks.length * 0.5
+    ? candidatos[0]
+    : null
+  const headingIndex = (valido || fallback)?.index ?? -1
   return {
     blocks,
     headingIndex,
@@ -129,9 +190,27 @@ function encontrarSecaoReferencias() {
   }
 }
 
+function proximoBlocoPareceReferencia(blocks, headingIndex) {
+  for (let i = headingIndex + 1; i < blocks.length; i += 1) {
+    const text = textoBloco(blocks[i])
+    if (!text) continue
+    const normal = normalizarTexto(text)
+    if (/^(TABLE OF CONTENTS?|SUMARIO|SUMÁRIO|INTRODUCTION|INTRODUCAO|INTRODUÇÃO)$/.test(normal)) return false
+    return pareceInicioReferencia(text)
+  }
+  return false
+}
+
+function pareceTituloSecaoReferencias(el) {
+  const text = normalizarTexto(textoBloco(el))
+    .replace(/^\d+(?:\s+\d+|\.\d+)*\s+/, '')
+  return /^(REFERENCIAS|REFER NCIAS|REFERENCIAS BIBLIOGRAFICAS|REFER NCIAS BIBLIOGRAFICAS|BIBLIOGRAFIA|REFERENCES)$/.test(text)
+}
+
 function pareceInicioReferencia(text) {
   const t = String(text || '').trim()
   if (!t) return false
+  if (autoriaSubstituidaPorLinha(t)) return true
   if (/^[A-ZÀ-Þ][A-ZÀ-Þ\s.'’-]+,\s+[A-ZÀ-Þ]/.test(t)) return true
   if (/^[A-ZÀ-Þ][A-ZÀ-Þ\s.'’-]{2,}\.\s+/.test(t)) return true
   if (/^[A-ZÀ-Þ][A-ZÀ-Þ0-9\s.'’()&-]{2,}\.\s+/.test(t)) return true
@@ -154,6 +233,10 @@ function pareceInicioReferencia(text) {
   }
 
   return false
+}
+
+function autoriaSubstituidaPorLinha(text) {
+  return /^_{3,}\.?\s+/.test(String(text || '').trim())
 }
 
 function textoAntesDoPrimeiroNegrito(root) {
@@ -246,17 +329,28 @@ function montarReferencias(referenceBlocks) {
       refs[refs.length - 1].italicos = refs[refs.length - 1].italicos.concat(trechosItalico(block))
     }
   }
+  let ultimaAutoriaExplicita = ''
   return refs.map((ref, index) => {
     const anos = Array.from(new Set((ref.text.match(YEAR_GLOBAL_RE) || []).map(ano => ano.toLowerCase())))
     const ano = anos[0] || ''
-    const normal = normalizarTexto(ref.text)
+    const autoriaExtraida = extrairAutoriaChaveAbnt(ref)
+    const autoriaBusca = autoriaSubstituidaPorLinha(ref.text)
+      ? ultimaAutoriaExplicita
+      : autoriaExtraida
+    if (autoriaExtraida && !autoriaSubstituidaPorLinha(ref.text)) {
+      ultimaAutoriaExplicita = autoriaExtraida
+    }
+    const normal = normalizarTexto(autoriaBusca ? `${autoriaBusca} ${ref.text}` : ref.text)
     return {
       ...ref,
       index,
       ano,
       anos,
       normal,
-      inicioNormal: normalizarTexto(ref.text.split('.')[0] || ref.text),
+      autoriaBusca,
+      inicioNormal: autoriaBusca && autoriaSubstituidaPorLinha(ref.text)
+        ? autoriaBusca
+        : normalizarTexto(ref.text.split('.')[0] || ref.text),
     }
   })
 }
@@ -272,6 +366,9 @@ function normalizarQuebrasSoltas() {
 function limparAutoria(raw) {
   return String(raw || '')
     .replace(/\bet\s+al\.?/gi, '')
+    .replace(/\be\s+colaboradores?\b/gi, '')
+    .replace(/\be\s+colaboradoras?\b/gi, '')
+    .replace(/\be\s+cols?\.?/gi, '')
     .replace(/\b(?:apud|cf|ver|vide)\b\.?/gi, '')
     .replace(/\b(?:p|pp)\.\s*[\d–—-]+/gi, '')
     .replace(/\s+/g, ' ')
@@ -280,20 +377,45 @@ function limparAutoria(raw) {
 
 function autoresDaCitacao(raw) {
   const autoria = limparAutoria(raw)
-  const temEtAl = /\bet\s+al\.?/i.test(raw)
+  const temEtAl = /\bet\s+al\.?|\be\s+colaboradores?\b|\be\s+colaboradoras?\b|\be\s+cols?\.?/i.test(raw)
   const normal = normalizarTexto(autoria)
   if (!normal) return []
 
   if (temEtAl) {
-    return [normal.split(/\s+/)[0]].filter(Boolean)
+    return [normal].filter(Boolean)
   }
 
   const partes = autoria
-    .split(/\s*;\s*|\s*,\s*(?=[A-ZÀ-Ý][A-Za-zÀ-ÿ]+(?:\s|$))/)
+    .split(/\s*;\s*|\s*&\s*|\s+(?:e|and)\s+(?=[A-ZÀ-Ý])|\s*,\s*(?=[A-ZÀ-Ý][A-Za-zÀ-ÿ]+(?:\s|$))/i)
     .map(p => normalizarTexto(p))
     .filter(Boolean)
 
   return partes.length ? partes : [normal]
+}
+
+function sobrenomeChaveAutorNormalizado(author) {
+  const variantes = variantesAutorCitacao(author)
+  const candidato = variantes.length > 1 ? variantes[1] : variantes[0]
+  const words = candidato.split(/\s+/).filter(Boolean)
+  if (words.length >= 2 && AGNOMES_AUTOR.includes(words[1])) return `${words[0]} ${words[1]}`
+  return words[0] || candidato
+}
+
+function sobrenomesCitacao(unit) {
+  return (unit?.authors || [])
+    .map(author => sobrenomeChaveAutorNormalizado(author))
+    .filter(Boolean)
+}
+
+function sobrenomesReferencia(ref) {
+  const text = normalizarEspacos(ref?.text || '')
+  const autores = []
+  const autorRe = /(?:^|;\s*)([A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*),\s+[^.;]+/g
+  let match
+  while ((match = autorRe.exec(text))) {
+    autores.push(normalizarTexto(match[1]))
+  }
+  return autores
 }
 
 function problemasEspacoIndicadores(text) {
@@ -310,6 +432,26 @@ function capitalizarNomeCitacao(text) {
     .toLocaleLowerCase('pt-BR')
     .replace(/(^|[\s'’-])(\p{L})/gu, (_, prefixo, letra) => prefixo + letra.toLocaleUpperCase('pt-BR'))
     .replace(/\bEt\s+Al\.?/gi, 'et al.')
+}
+
+function autoriaCitacaoTemSeparadorInadequado(text) {
+  return /\s+(?:e|and)\s+/i.test(text || '') || /&/.test(text || '')
+}
+
+function corrigirAutoriaCitacao(text) {
+  const autoria = normalizarEspacos(text)
+  if (!autoria) return autoria
+  if (/\bet\s+al\.?|\be\s+colaboradores?\b|\be\s+colaboradoras?\b|\be\s+cols?\.?/i.test(autoria)) {
+    return capitalizarNomeCitacao(autoria)
+  }
+
+  const partes = autoria
+    .split(/\s*;\s*|\s*&\s*|\s+(?:e|and)\s+(?=[A-ZÀ-Ý])|\s*,\s*(?=[A-ZÀ-Ý][A-Za-zÀ-ÿ]+(?:\s|$))/i)
+    .map(parte => normalizarEspacos(parte))
+    .filter(Boolean)
+
+  if (partes.length > 1) return partes.map(capitalizarNomeCitacao).join('; ')
+  return capitalizarNomeCitacao(autoria)
 }
 
 function autoriaCitacaoEmCaixaAlta(text) {
@@ -333,8 +475,54 @@ function referenciaParecePessoaFisica(ref) {
 function problemaCaixaAltaAutorCitacao(unit, ref) {
   if (!referenciaParecePessoaFisica(ref)) return ''
   if (!autoriaCitacaoEmCaixaAlta(unit?.authorsRaw || '')) return ''
-  const sugestao = capitalizarNomeCitacao(unit.authorsRaw || '')
+  const sugestao = corrigirAutoriaCitacao(unit.authorsRaw || '')
   return `Em citações de pessoa física, não use caixa alta no sobrenome do autor; prefira "${sugestao}" em vez de "${normalizarEspacos(unit.authorsRaw)}".`
+}
+
+function problemasAutoresCitacao(unit, ref) {
+  const issues = []
+  const autores = sobrenomesCitacao(unit)
+  if (!unit?.narrativa && autores.length > 1 && autoriaCitacaoTemSeparadorInadequado(unit?.authorsRaw || '')) {
+    issues.push('Em citações parentéticas com dois ou mais autores, separe os autores por ponto e vírgula, não por "e", "and" ou "&".')
+  }
+
+  if (!ref || autores.length < 2) return issues
+  const autoresRef = sobrenomesReferencia(ref)
+  if (autoresRef.length < autores.length) return issues
+
+  const mesmosAutores = autores.every(autor => autoresRef.includes(autor))
+  const mesmaOrdem = autores.every((autor, index) => autoresRef[index] === autor)
+  if (mesmosAutores && !mesmaOrdem) {
+    issues.push(`A ordem dos autores na citação diverge da lista de referências; prefira "${autoresRef.slice(0, autores.length).join('; ')}".`)
+  }
+  return issues
+}
+
+function problemaNomeSimilarAutorCitacao(unit, ref) {
+  if (!ref) return ''
+  for (const author of unit?.authors || []) {
+    const words = author.split(/\s+/).filter(w => w.length > 1)
+    if (words.length < 3) continue
+
+    const variantes = variantesAutorCitacao(author)
+    const coincidenciaIntegral = variantes.some(variant => (
+      contemTermoNormalizado(ref.normal, variant)
+      || (ref.inicioNormal && contemTermoNormalizado(ref.inicioNormal, variant))
+    ))
+    if (coincidenciaIntegral) continue
+
+    const sobrenome = sobrenomePrincipalAutor(author)
+    const sobrenomeInicioHit = sobrenome && ref.inicioNormal && contemTermoNormalizado(ref.inicioNormal, sobrenome)
+    const nomesDistintivos = words
+      .filter(w => w.length >= 4)
+      .filter(w => !sobrenome.split(/\s+/).includes(w))
+    const nomeDistintivoHit = nomesDistintivos.some(w => contemTermoNormalizado(ref.normal, w))
+
+    if (sobrenomeInicioHit && nomeDistintivoHit) {
+      return 'O nome do autor na citação está apenas similar ao nome na lista de referências; confira se há omissão ou variação de prenome/nome intermediário.'
+    }
+  }
+  return ''
 }
 
 function ehParenteseNaoBibliografico(text) {
@@ -343,6 +531,12 @@ function ehParenteseNaoBibliografico(text) {
     .replace(/\s+/g, ' ')
     .trim()
   if (/^\d{4}\s*[-\u2013\u2014]\s*\d{4}$/.test(cleaned)) return true
+  if (/^\d{4}\s*[-\u2013\u2014]\s*(?:\d{4}|atualidade|presente|atual)\b(?:\s*;\s*\d{4}\s*[-\u2013\u2014]\s*(?:\d{4}|atualidade|presente|atual)\b)+$/i.test(cleaned)) {
+    return true
+  }
+  if (/^\d{4}\s*[-\u2013\u2014]\s*\d{4}\b(?:\s+(?:no|na|nos|nas|em|de|do|da|dos|das)\b[^;,.]*)?(?:\s+e\s+\d{4}\s*[-\u2013\u2014]\s*\d{4}\b(?:\s+(?:no|na|nos|nas|em|de|do|da|dos|das)\b[^;,.]*)?)*$/i.test(cleaned)) {
+    return true
+  }
 
   const legalText = cleaned
     .normalize('NFD')
@@ -364,7 +558,6 @@ function extrairUnidadesCitacao(text) {
     .replace(/[()]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-  if (/^\d{4}\s*[-–—]\s*\d{4}$/.test(cleaned)) return []
   if (/\bapud\b/i.test(cleaned)) {
     const partesApud = cleaned.split(/\bapud\b/i)
     const fonteConsultada = partesApud[partesApud.length - 1]
@@ -376,39 +569,59 @@ function extrairUnidadesCitacao(text) {
   }
   const units = []
   let cursor = 0
+  let lastAuthorsRaw = ''
   let match
   YEAR_GLOBAL_RE.lastIndex = 0
   while ((match = YEAR_GLOBAL_RE.exec(cleaned))) {
     const rawAuthors = cleaned.slice(cursor, match.index).replace(/^[;\s]+/, '').replace(/[,;\s]+$/, '')
+    const authorsRaw = rawAuthors || lastAuthorsRaw
     const ano = match[0].toLowerCase()
     const after = cleaned.slice(match.index + match[0].length)
     const pagina = (after.match(/^\s*,?\s*p\.?\s*[\d–—-]+(?:\s*-\s*\d+)?/i) || [''])[0]
-    if (rawAuthors && !/^\d+$/.test(rawAuthors) && !/(?:^|[\s,;])de$/i.test(rawAuthors)) {
+    if (authorsRaw && !/^\d+$/.test(authorsRaw) && !/(?:^|[\s,;])de$/i.test(authorsRaw)) {
       units.push({
-        raw: `${rawAuthors}, ${ano}${pagina}`.replace(/\s+/g, ' ').trim(),
-        authorsRaw: rawAuthors,
-        authors: autoresDaCitacao(rawAuthors),
+        raw: `${authorsRaw}, ${ano}${pagina}`.replace(/\s+/g, ' ').trim(),
+        authorsRaw,
+        authors: autoresDaCitacao(authorsRaw),
         ano,
       })
+      if (rawAuthors) lastAuthorsRaw = rawAuthors
     }
-    const nextSeparator = after.search(/\s*;\s*/)
-    cursor = nextSeparator === 0
-      ? match.index + match[0].length + (after.match(/^\s*;\s*/) || [''])[0].length
+    const separatorMatch = after.match(/^\s*;\s*/)
+    cursor = separatorMatch
+      ? match.index + match[0].length + separatorMatch[0].length
       : match.index + match[0].length
   }
   return units
 }
 
+function normalizarCitacoesInlineNosBlocos(blocks) {
+  blocks.forEach(block => {
+    block.querySelectorAll?.('em, i').forEach(el => {
+      const text = normalizarEspacos(el.textContent || '')
+      if (/^et\s+al\.?$/i.test(text)) {
+        el.replaceWith(document.createTextNode(el.textContent || ''))
+      }
+    })
+    block.normalize()
+  })
+}
+
 function encontrarAutorAntes(text, start) {
   const before = text.slice(0, start)
-  const match = before.match(/(?:^|[\s,.;:])([A-ZÀ-Ý][A-Za-zÀ-ÿ.'’-]+(?:\s+(?:de|da|do|das|dos|e|Jr\.?|Junior|Filho|Neto|Sobrinho|et\s+al\.?|[A-ZÀ-Ý][A-Za-zÀ-ÿ.'’-]+)){0,8})\s*$/)
+  const nomeAutor = "[A-ZÀ-Ý][A-Za-zÀ-ÿ.'’-]+(?:\\s+(?:de|da|do|das|dos|Jr\\.?|Junior|Filho|Neto|Sobrinho|[A-ZÀ-Ý][A-Za-zÀ-ÿ.'’-]+)){0,8}"
+  const sufixoColetivo = "(?:\\s+et\\s+al\\.?|\\s+e\\s+colaboradores?|\\s+e\\s+colaboradoras?|\\s+e\\s+cols?\\.?)?"
+  const autoriaRe = new RegExp("(?:^|[\\s,.;:])(" + nomeAutor + "(?:(?:\\s*,\\s*|\\s*;\\s*|\\s+(?:e|and)\\s+|\\s*&\\s*)" + nomeAutor + ")*" + sufixoColetivo + ")\\s*$")
+  const match = before.match(autoriaRe)
   if (!match) return null
   const original = match[1].trim()
-  const author = original
-    .replace(/^(?:Segundo|Para|Conforme|Cf\.?|Ver|Vide|Apud)\s+/i, '')
+  let author = original
+    .replace(/^(?:Segundo|Para|Conforme|Consoante|Cf\.?|Ver|Vide|Apud)\s+/i, '')
     .trim()
-  const deslocamento = original.length - author.length
-  const authorStart = start - original.length + deslocamento - (before.slice(-1) === ' ' ? 1 : 0)
+  const contextoCurto = author.match(/(?:^|\s)(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ.'’-]{0,2}|[A-ZÀ-Ý]{1,4}s?)\s+(?:de|da|do|das|dos)\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ.'’-]+(?:\s+(?:Jr\.?|Junior|Filho|Neto|Sobrinho))?)$/)
+  if (contextoCurto) author = contextoCurto[1].trim()
+  const deslocamento = original.lastIndexOf(author)
+  const authorStart = start - original.length + Math.max(0, deslocamento) - (before.slice(-1) === ' ' ? 1 : 0)
   return {
     text: author,
     start: Math.max(0, authorStart + (before.slice(authorStart, authorStart + 1) === ' ' ? 1 : 0)),
@@ -417,8 +630,14 @@ function encontrarAutorAntes(text, start) {
 
 function temIndicadorCitacaoAntes(text, authorStart) {
   const contexto = text.slice(Math.max(0, authorStart - 80), authorStart)
-  return /(?:^|[\s,.;:])(?:segundo|conforme|para|apud|cf\.?|ver|vide|destaca|afirma|afirmam|aponta|apontam|observa|observam|sustenta|sustentam|defende|defendem|explica|explicam|assinala|assinalam|ressalta|ressaltam|a pesquisadora|o pesquisador|a autora|o autor|as autoras|os autores|de acordo com)\s+$/i
+  return /(?:^|[\s,.;:])(?:segundo|conforme|consoante|para|apud|cf\.?|ver|vide|destaca|afirma|afirmam|aponta|apontam|observa|observam|sustenta|sustentam|defende|defendem|explica|explicam|assinala|assinalam|ressalta|ressaltam|a pesquisadora|o pesquisador|a autora|o autor|as autoras|os autores|de acordo com)\s+$/i
     .test(contexto)
+}
+
+function temIndicadorCitacaoDepois(text, end) {
+  const contexto = text.slice(end, end + 100)
+  return /^\s*,?\s*(?:conforme\s+)?citado\s+por\b/i.test(contexto)
+    || /^\s*,?\s*apud\b/i.test(contexto)
 }
 
 function autorAnoExisteNaLista(authorText, ano, referencias) {
@@ -429,6 +648,16 @@ function autorAnoExisteNaLista(authorText, ano, referencias) {
     ano: String(ano).toLowerCase(),
   }
   return referencias.some(ref => scoreReferencia(unit, ref, true) > 0)
+}
+
+function autorExisteNaLista(authorText, referencias) {
+  if (!authorText) return false
+  const unit = {
+    authorsRaw: authorText,
+    authors: autoresDaCitacao(authorText),
+    ano: '',
+  }
+  return referencias.some(ref => scoreReferencia(unit, ref, false) > 0)
 }
 
 function nodeEstaEmItalico(node) {
@@ -453,6 +682,7 @@ function textNodesInside(root, limiteSet) {
 
 function coletarCitacoes(bodyBlocks, referencias) {
   const matches = []
+  normalizarCitacoesInlineNosBlocos(bodyBlocks)
   const limiteSet = new Set(bodyBlocks)
   const nodes = textNodesInside(editor, limiteSet)
 
@@ -477,7 +707,9 @@ function coletarCitacoes(bodyBlocks, referencias) {
         const ano = (inside.match(YEAR_RE) || [''])[0].toLowerCase()
         const aceitarAutorAntes = autorAntes?.text && (
           temIndicadorCitacaoAntes(text, autorAntes.start)
+          || temIndicadorCitacaoDepois(text, regex.lastIndex)
           || autorAnoExisteNaLista(autorAntes.text, ano, referencias)
+          || autorExisteNaLista(autorAntes.text, referencias)
         )
         if (aceitarAutorAntes) {
           units = [{
@@ -485,6 +717,7 @@ function coletarCitacoes(bodyBlocks, referencias) {
             authorsRaw: autorAntes.text,
             authors: autoresDaCitacao(autorAntes.text),
             ano,
+            narrativa: true,
           }]
           start = autorAntes.start
           display = text.slice(start, regex.lastIndex)
@@ -509,6 +742,40 @@ function coletarCitacoes(bodyBlocks, referencias) {
   })
 }
 
+function variantesAutorCitacao(author) {
+  const normal = normalizarTexto(author)
+  const words = normal.split(/\s+/).filter(Boolean)
+  const variantes = [normal].concat(variantesInstitucionaisAutor(author))
+  const ultimo = words[words.length - 1]
+  if (words.length >= 2) {
+    if (AGNOMES_AUTOR.includes(ultimo)) {
+      const sobrenomeComAgnome = `${words[words.length - 2]} ${ultimo}`
+      variantes.push(sobrenomeComAgnome)
+      variantes.push(`${sobrenomeComAgnome} ${words.slice(0, -2).join(' ')}`.trim())
+    } else {
+      variantes.push(`${ultimo} ${words.slice(0, -1).join(' ')}`.trim())
+    }
+  }
+  return Array.from(new Set(variantes))
+}
+
+function contemTermoNormalizado(text, term) {
+  const t = ` ${normalizarTexto(text)} `
+  const normalizedTerm = normalizarTexto(term)
+  if (!normalizedTerm) return false
+  return t.includes(` ${normalizedTerm} `)
+}
+
+function sobrenomePrincipalAutor(author) {
+  const words = normalizarTexto(author).split(/\s+/).filter(Boolean)
+  if (!words.length) return ''
+  const ultimo = words[words.length - 1]
+  if (AGNOMES_AUTOR.includes(ultimo) && words.length >= 2) {
+    return `${words[words.length - 2]} ${ultimo}`
+  }
+  return ultimo
+}
+
 function scoreReferencia(unit, ref, exigirAno) {
   const anoOk = unit.ano && ((ref.anos || []).includes(unit.ano) || ref.ano === unit.ano)
   if (exigirAno && !anoOk) return 0
@@ -520,13 +787,19 @@ function scoreReferencia(unit, ref, exigirAno) {
   for (const author of autores) {
     const words = author.split(/\s+/).filter(w => w.length > 1)
     if (!words.length) continue
-    const phraseHit = ref.normal.includes(author)
-    const inicioHit = ref.inicioNormal && ref.inicioNormal.includes(author)
+    const variantes = variantesAutorCitacao(author)
+    const phraseHit = variantes.some(variant => contemTermoNormalizado(ref.normal, variant))
+    const inicioHit = ref.inicioNormal && variantes.some(variant => contemTermoNormalizado(ref.inicioNormal, variant))
+    const varianteInicioHit = variantes.length > 1 && ref.inicioNormal && variantes.slice(1).some(variant => contemTermoNormalizado(ref.inicioNormal, variant))
+    const sobrenome = sobrenomePrincipalAutor(author)
+    const sobrenomeInicioHit = sobrenome && ref.inicioNormal && contemTermoNormalizado(ref.inicioNormal, sobrenome)
     const palavrasDistintivas = words.filter(w => w.length >= 4)
+    const nomesDistintivos = palavrasDistintivas.filter(w => !sobrenome.split(/\s+/).includes(w))
+    const nomeDistintivoHit = nomesDistintivos.some(w => contemTermoNormalizado(ref.normal, w))
     const autoriaComposta = words.length >= 3
-    if (autoriaComposta && palavrasDistintivas.some(w => !ref.normal.includes(w))) continue
-    const wordHits = words.filter(w => ref.normal.includes(w)).length
-    if (phraseHit || inicioHit) {
+    if (autoriaComposta && !phraseHit && !varianteInicioHit && !(sobrenomeInicioHit && nomeDistintivoHit) && palavrasDistintivas.some(w => !contemTermoNormalizado(ref.normal, w))) continue
+    const wordHits = words.filter(w => contemTermoNormalizado(ref.normal, w)).length
+    if (phraseHit || inicioHit || varianteInicioHit || (sobrenomeInicioHit && nomeDistintivoHit)) {
       hits += inicioHit ? 3 : 2
     } else if (!autoriaComposta && wordHits >= Math.min(words.length, 2)) {
       hits += 1
@@ -555,6 +828,9 @@ function vincularUnidade(unit, referencias) {
 }
 
 function classeResultado(statuses) {
+  if (statuses.length > 1 && statuses.includes('missing') && statuses.some(status => status !== 'missing')) {
+    return 'partial'
+  }
   if (statuses.includes('missing')) return 'missing'
   if (statuses.includes('warning')) return 'warning'
   return 'ok'
@@ -562,6 +838,7 @@ function classeResultado(statuses) {
 
 function textoStatus(status) {
   if (status === 'ok') return 'Encontrada'
+  if (status === 'partial') return 'Parcial'
   if (status === 'warning') return 'Ano divergente'
   if (status === 'format') return 'Checagem ABNT'
   return 'Ausente'
@@ -601,6 +878,7 @@ function temAutoriaAbnt(text) {
   const t = normalizarEspacos(text)
   if (/^[A-ZÀ-Ý][A-ZÀ-Ý0-9 .,'’&()/-]{2,}\.\s+/.test(t)) return true
   if (/^[A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*,\s+[^.;]+(?:\.\s*[A-Z]\.)?\s+et\s+al\.\s+/i.test(t)) return true
+  if (/^[A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*,\s+[^.;]+;\s+et\s+al\.\s+/i.test(t)) return true
   if (temAutoresSeparadosPorPontoEVirgula(t)) return true
   if (/^[A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*,\s+[^.]+(?:\.\s*[A-Z]\.)?\s*;\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*,\s+/.test(t)) return true
   if (/^[A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*,\s+[^.]{2,}\.\s+/.test(t)) return true
@@ -625,8 +903,9 @@ function extrairAutoriaChaveAbnt(refOrText) {
   const sobrenome = "[A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*"
   const autorComIniciais = `${sobrenome},\\s+(?:[A-Z]\\.\\s*)+`
   const autorComEtAl = `${sobrenome},\\s+[^.;]+?\\s+et\\s+al\\.`
+  const autorComEtAlAposPontoEVirgula = `${sobrenome},\\s+[^.;]+;\\s+et\\s+al\\.`
   const autorComNome = `${sobrenome},\\s+[^.;]+\\.`
-  const autor = `(?:${autorComEtAl}|${autorComIniciais}|${autorComNome})`
+  const autor = `(?:${autorComEtAlAposPontoEVirgula}|${autorComEtAl}|${autorComIniciais}|${autorComNome})`
   const pessoais = t.match(new RegExp(`^(${autor}(?:\\s*;\\s*${autor})*)\\s+`, 'i'))
   if (pessoais) return normalizarTexto(pessoais[1])
 
@@ -768,8 +1047,11 @@ function auditarReferenciaAbnt(ref, avisosExtras) {
   if (!/[.!?]$/.test(text)) issues.push('A referência deve terminar com ponto final.')
   if (/\s{2,}/.test(original.replace(/\u00a0/g, ' '))) issues.push('Há espaços duplicados na referência.')
   problemasEspacoIndicadores(text).forEach(issue => issues.push(issue))
+  if (autoriaSubstituidaPorLinha(text)) {
+    issues.push('A linha de substituição de autoria ("_______.") não é aceita pela regra atual; repita o autor por extenso.')
+  }
   if (!ano) issues.push('Ano/data de publicação não identificado.')
-  if (!temAutoriaAbnt(text) && tipo !== 'legislacao') {
+  if (!temAutoriaAbnt(text) && tipo !== 'legislacao' && !autoriaSubstituidaPorLinha(text)) {
     issues.push('Elemento de autoria não parece estar no formato SOBRENOME, Prenome. ou ENTIDADE.')
   }
   if (autoresMultiplosSemPontoEVirgula(text)) {
@@ -777,6 +1059,9 @@ function auditarReferenciaAbnt(ref, avisosExtras) {
   }
   if (etAlAbntIncorreto(text)) {
     issues.push('A expressão "et al." deve terminar com ponto.')
+  }
+  if (/^[A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*,\s+[^.;]+;\s+et\s+al\./i.test(text)) {
+    issues.push('A expressão <i>et al.</i> deve vir após o primeiro autor, sem ponto e vírgula: MARQUES, Luís Maurício <i>et al.</i>')
   }
   if (contarAutoresExplícitos(text) >= 4) {
     issues.push('Sugere-se utilizar <i>et al.</i> para quatro ou mais autores.')
@@ -787,11 +1072,11 @@ function auditarReferenciaAbnt(ref, avisosExtras) {
   if (temUrl || temDisponivel || temAcesso) {
     if (!temDisponivel) issues.push('Documento online deve trazer "Disponível em:".')
     if (!temAcesso) issues.push('Documento online deve trazer "Acesso em:".')
-    const acessoComMaioAbreviado = /Acesso em:\s*\d{1,2}\s+mai\.\s+(?:18|19|20)\d{2}/i.test(text)
+    const acessoComMaioAbreviado = new RegExp(`Acesso em:\\s*${DIA_ACESSO_ABNT_RE.source}\\s+mai\\.\\s+(?:18|19|20)\\d{2}`, 'i').test(text)
     if (acessoComMaioAbreviado) {
       issues.push('O mês de maio não deve ser abreviado na data de acesso: use "maio", não "mai.".')
-    } else if (temAcesso && !new RegExp(`Acesso em:\\s*\\d{1,2}\\s+${MESES_ABNT_RE.source}\\s+(?:18|19|20)\\d{2}`, 'i').test(text)) {
-      issues.push('Data de acesso deve seguir o padrão "Acesso em: 8 fev. 2018.".')
+    } else if (temAcesso && !new RegExp(`Acesso em:\\s*${DIA_ACESSO_ABNT_RE.source}\\s+${MESES_ABNT_RE.source}\\s+(?:18|19|20)\\d{2}`, 'i').test(text)) {
+      issues.push('Data de acesso deve seguir o padrão "Acesso em: 1º jul. 2021." ou "Acesso em: 8 fev. 2018.".')
     }
   }
 
@@ -837,6 +1122,12 @@ function aplicarMarcacoes(matches, referencias) {
         resultados
           .map(resultado => problemaCaixaAltaAutorCitacao(resultado.unit, resultado.ref))
           .filter(Boolean),
+        resultados
+          .flatMap(resultado => problemasAutoresCitacao(resultado.unit, resultado.ref))
+          .filter(Boolean),
+        resultados
+          .map(resultado => problemaNomeSimilarAutorCitacao(resultado.unit, resultado.ref))
+          .filter(Boolean),
       ),
     ))
     const status = classeResultado(resultados.map(r => r.status))
@@ -860,8 +1151,11 @@ function aplicarMarcacoes(matches, referencias) {
 
       const span = document.createElement('span')
       span.className = `ref-mark ${match.status}`
+      if (match.status === 'ok' && match.issues?.length) span.classList.add('format-warning')
       span.dataset.occurrenceId = match.id
-      span.title = match.resultados.map(r => `${r.unit.raw}: ${textoStatus(r.status)}`).join('\n')
+      span.title = match.resultados.map(r => `${r.unit.raw}: ${textoStatus(r.status)}`)
+        .concat(match.status === 'ok' && match.issues?.length ? ['Checagem ABNT pendente'] : [])
+        .join('\n')
       span.textContent = text.slice(match.start, match.end)
       fragment.appendChild(span)
 
@@ -870,6 +1164,7 @@ function aplicarMarcacoes(matches, referencias) {
         text: span.textContent,
         status: match.status,
         resultados: match.resultados,
+        issues: match.issues || [],
         element: span,
       })
 
@@ -898,8 +1193,15 @@ function aplicarMarcacoes(matches, referencias) {
 
 function anexarProblemasAbnt(list, referencias) {
   const gruposAutorAno = {}
+  let ultimaAutoriaExplicita = ''
   referencias.forEach(ref => {
-    const autoria = extrairAutoriaChaveAbnt(ref)
+    const autoriaExtraida = extrairAutoriaChaveAbnt(ref)
+    const autoria = autoriaSubstituidaPorLinha(ref.text)
+      ? ultimaAutoriaExplicita
+      : autoriaExtraida
+    if (autoriaExtraida && !autoriaSubstituidaPorLinha(ref.text)) {
+      ultimaAutoriaExplicita = autoriaExtraida
+    }
     const ano = extrairAnoReferenciaPrincipal(ref)
     const anoBase = ano.replace(/[a-z]$/i, '')
     if (!autoria || !anoBase) return
@@ -946,6 +1248,14 @@ function anexarProblemasAbnt(list, referencias) {
   return list
 }
 
+function prepararReferenciasClicaveis(referencias) {
+  referencias.forEach(ref => {
+    if (!ref.element?.isConnected) return
+    ref.element.classList.add('ref-list-entry')
+    ref.element.dataset.refIndex = String(ref.index)
+  })
+}
+
 function conferirReferencias() {
   stripMarks()
   normalizarQuebrasSoltas()
@@ -955,6 +1265,7 @@ function conferirReferencias() {
   const referencias = montarReferencias(secao.referenceBlocks)
   const citacoes = coletarCitacoes(secao.bodyBlocks, referencias)
   occurrences = anexarProblemasAbnt(aplicarMarcacoes(citacoes, referencias), referencias)
+  prepararReferenciasClicaveis(referencias)
   ultimoResultado = { secao, referencias, citacoes, occurrences }
   renderFilters()
   renderOccurrences()
@@ -970,15 +1281,17 @@ function renderSummary(resultado) {
   }
   const total = occurrences.length
   const ok = occurrences.filter(o => o.status === 'ok').length
+  const partial = occurrences.filter(o => o.status === 'partial').length
   const warning = occurrences.filter(o => o.status === 'warning').length
   const missing = occurrences.filter(o => o.status === 'missing').length
   const format = occurrences.filter(o => o.status === 'format').length
   const refs = resultado.referencias.length
   const citacoes = resultado.citacoes.length
   const heading = resultado.secao.heading ? 'seção de referências encontrada' : 'seção de referências não encontrada'
+  const correcoes = correcoesAplicadas.length
   summaryEl.innerHTML = `
     <strong>${total}</strong> ocorrência(s): <strong>${citacoes}</strong> citação(ões) no texto, <strong>${refs}</strong> referência(s), ${heading}.<br>
-    Encontradas: <strong>${ok}</strong> · Ano divergente: <strong>${warning}</strong> · Ausentes: <strong>${missing}</strong> · Checagem ABNT: <strong>${format}</strong>
+    Encontradas: <strong>${ok}</strong> · Parciais: <strong>${partial}</strong> · Ano divergente: <strong>${warning}</strong> · Ausentes: <strong>${missing}</strong> · Checagem ABNT: <strong>${format}</strong>${correcoes ? ` · Correções validadas: <strong>${correcoes}</strong>` : ''}
   `
   countBadge.textContent = String(total)
 }
@@ -987,6 +1300,7 @@ function renderFilters() {
   const groups = [
     ['todos', 'Todos'],
     ['ok', 'Encontradas'],
+    ['partial', 'Parciais'],
     ['warning', 'Ano divergente'],
     ['missing', 'Ausentes'],
     ['format', 'Checagem ABNT'],
@@ -1252,49 +1566,485 @@ function focusOccurrence(id) {
   selection.addRange(range)
 }
 
+function textoAtualOcorrencia(item) {
+  if (item?.element?.isConnected) return item.element.textContent || ''
+  return item?.referenceText || item?.text || ''
+}
+
+function ocorrenciaPodeSerCorrigida(item) {
+  if (!item?.element?.isConnected) return false
+  return item.element.classList.contains('ref-mark')
+    || item.element.classList.contains('ref-format')
+    || item.referenceType === 'referencia-manual'
+}
+
+function ocorrenciaEhCitacao(item) {
+  return item?.element?.classList.contains('ref-mark') || item?.referenceType === 'citacao'
+}
+
+function ocorrenciaEhReferenciaLista(item) {
+  return !!item?.element?.classList.contains('ref-format') || item?.referenceType === 'referencia-manual'
+}
+
+function ocorrenciaBaseDaCitacao(item) {
+  if (!item?.element?.isConnected) return item
+  if (item.resultados?.length) return item
+  return occurrences.find(o => o.element === item.element && o.status !== 'format' && o.resultados?.length) || item
+}
+
+function sugerirCorrecaoOcorrencia(item) {
+  const atual = textoAtualOcorrencia(item)
+  const base = ocorrenciaBaseDaCitacao(item)
+  let sugestao = atual
+
+  ;(base.resultados || []).forEach(resultado => {
+    const raw = resultado.unit?.authorsRaw || ''
+    const precisaCorrigirAutoria = autoriaCitacaoEmCaixaAlta(raw)
+      || (!resultado.unit?.narrativa && autoriaCitacaoTemSeparadorInadequado(raw))
+    if (!raw || !precisaCorrigirAutoria) return
+    const autoriaCorrigida = corrigirAutoriaCitacao(raw)
+    if (autoriaCorrigida && autoriaCorrigida !== raw) {
+      sugestao = sugestao.replace(raw, autoriaCorrigida)
+    }
+  })
+
+  return sugestao
+}
+
+function sanitizarHtmlCorrecao(html) {
+  const template = document.createElement('template')
+  template.innerHTML = String(html || '')
+  template.content.querySelectorAll('*').forEach(el => {
+    const tag = el.tagName.toLowerCase()
+    if (tag === 'b') {
+      const strong = document.createElement('strong')
+      strong.innerHTML = el.innerHTML
+      el.replaceWith(strong)
+      return
+    }
+    if (tag === 'i') {
+      const em = document.createElement('em')
+      em.innerHTML = el.innerHTML
+      el.replaceWith(em)
+      return
+    }
+    if (tag === 'script' || tag === 'style') {
+      el.remove()
+      return
+    }
+    if (!['strong', 'em', 'br'].includes(tag)) {
+      el.replaceWith(...Array.from(el.childNodes))
+      return
+    }
+    Array.from(el.attributes).forEach(attr => el.removeAttribute(attr.name))
+  })
+  return template.innerHTML
+}
+
+function temProblemaNegritoTitulo(item) {
+  return (item?.issues || []).some(issue => (
+    /negrito não deve incluir sinais de pontuação/i.test(issue)
+    || /subtítulo não deve ficar em negrito/i.test(issue)
+  ))
+}
+
+function corrigirNegritoTituloHtml(html) {
+  const template = document.createElement('template')
+  template.innerHTML = sanitizarHtmlCorrecao(html)
+  let alterado = false
+
+  Array.from(template.content.querySelectorAll('strong')).forEach(strong => {
+    const texto = strong.textContent || ''
+    const doisPontos = texto.indexOf(':')
+    if (doisPontos > 0 && doisPontos < texto.length - 1) {
+      const titulo = texto.slice(0, doisPontos).trim().replace(/[,:.;]+$/g, '')
+      const complemento = texto.slice(doisPontos + 1)
+      if (!titulo || !normalizarEspacos(complemento)) return
+
+      const novoStrong = document.createElement('strong')
+      novoStrong.textContent = titulo
+      strong.replaceWith(novoStrong, document.createTextNode(`:${complemento}`))
+      alterado = true
+      return
+    }
+
+    const pontuacaoFinal = texto.match(/([,:.;]+)(\s*)$/)
+    if (!pontuacaoFinal) return
+    const titulo = texto.slice(0, pontuacaoFinal.index).trimEnd()
+    if (!titulo) return
+
+    const novoStrong = document.createElement('strong')
+    novoStrong.textContent = titulo
+    strong.replaceWith(novoStrong, document.createTextNode(pontuacaoFinal[0]))
+    alterado = true
+  })
+
+  return alterado ? template.innerHTML : ''
+}
+
+function sugerirCorrecaoHtmlOcorrencia(item) {
+  if (!ocorrenciaEhReferenciaLista(item) || !item?.element?.isConnected || !temProblemaNegritoTitulo(item)) {
+    return ''
+  }
+  return corrigirNegritoTituloHtml(item.element.innerHTML)
+}
+
+function htmlInicialCorrecao(item, sugestao) {
+  const atual = textoAtualOcorrencia(item)
+  const sugestaoHtml = sugerirCorrecaoHtmlOcorrencia(item)
+  if (sugestaoHtml) return sugestaoHtml
+  if (sugestao && sugestao !== atual) return escHtml(sugestao)
+  if (item?.element?.isConnected) return sanitizarHtmlCorrecao(item.element.innerHTML)
+  return escHtml(atual)
+}
+
+function htmlAnteriorOcorrencia(item) {
+  if (item?.element?.isConnected) return sanitizarHtmlCorrecao(item.element.innerHTML)
+  return escHtml(textoAtualOcorrencia(item))
+}
+
+function renderCorrecaoOcorrencia(item) {
+  if (!ocorrenciaPodeSerCorrigida(item)) return ''
+  const sugestao = sugerirCorrecaoOcorrencia(item)
+  const htmlInicial = htmlInicialCorrecao(item, sugestao)
+  const textoAnterior = ocorrenciaEhReferenciaLista(item)
+    ? ''
+    : `
+      <div class="correction-before">
+        <strong>Texto anterior</strong>
+        <p>${htmlAnteriorOcorrencia(item)}</p>
+      </div>
+    `
+  return `
+    <div class="correction-box">
+      ${textoAnterior}
+      <label for="correctionText">Texto corrigido</label>
+      <div class="correction-toolbar" aria-label="Formatação do texto corrigido">
+        <button type="button" data-format-command="bold"><strong>B</strong></button>
+        <button type="button" data-format-command="italic"><em>I</em></button>
+      </div>
+      <div id="correctionText" class="correction-editor" contenteditable="true" role="textbox" aria-multiline="true">${htmlInicial}</div>
+      <div class="correction-actions">
+        <button type="button" class="primary" data-action="apply-correction">Aplicar correção</button>
+        <span>O ABeNiTa vai conferir novamente essa ocorrência após aplicar.</span>
+      </div>
+      <p class="correction-feedback" id="correctionFeedback"></p>
+    </div>
+  `
+}
+
+function renderComentarioOcorrencia(item) {
+  if (!ocorrenciaPodeSerCorrigida(item)) return ''
+  return `
+    <div class="comment-box">
+      <label for="commentAuthor">Comentário no Word</label>
+      <input id="commentAuthor" type="text" value="${escHtml(comentarioAutorPadrao)}" placeholder="Autor do comentário" />
+      <textarea id="commentText" rows="3" placeholder="Escreva o comentário que deve aparecer no Word."></textarea>
+      <div class="comment-actions">
+        <button type="button" data-action="add-word-comment">Adicionar comentário</button>
+        <span>O comentário será inserido no DOCX baixado, no local desta ocorrência.</span>
+      </div>
+      <p class="comment-feedback" id="commentFeedback"></p>
+    </div>
+  `
+}
+
+function relatorioErrosOcorrencia(item) {
+  const erros = []
+  ;(item?.resultados || []).forEach(resultado => {
+    if (resultado.status === 'ok') return
+    const trecho = resultado.unit?.raw || item.text || ''
+    const detalhe = resultado.status === 'warning' && resultado.ref?.text
+      ? `Ano divergente em "${trecho}". Referência vinculada: ${resultado.ref.text}`
+      : `${textoStatus(resultado.status)}: ${trecho}`
+    erros.push(detalhe)
+  })
+
+  ;(item?.issues || []).forEach(issue => erros.push(issue))
+  return Array.from(new Set(erros.filter(Boolean)))
+}
+
+function renderRelatorioOcorrencia(item) {
+  const erros = relatorioErrosOcorrencia(item)
+  if (!erros.length) {
+    return `
+      <div class="source-report clean">
+        <strong>Nenhum problema detectado 😎</strong>
+      </div>
+    `
+  }
+  const lista = erros.map(erro => `<li>${formatIssueHtml(erro)}</li>`).join('')
+  return `
+    <div class="source-report">
+      <strong>Relatório da ocorrência</strong>
+      <ul class="issue-list">${lista}</ul>
+    </div>
+  `
+}
+
+function htmlFonteReferencia(ref) {
+  if (ref?.element?.isConnected) return sanitizarHtmlCorrecao(ref.element.innerHTML)
+  return escHtml(ref?.text || 'Referência não encontrada na lista final.')
+}
+
 function renderFonteReferencia(item) {
   if (!item) return ''
-  if (item.status === 'format') {
+  if (item.status === 'format' || item.referenceType === 'referencia-manual') {
     const tipo = ABNT_TIPOS[item.referenceType] || ABNT_TIPOS.desconhecido
-    const issues = (item.issues || []).map(issue => `<li>${formatIssueHtml(issue)}</li>`).join('')
+    const referenciaHtml = item.element?.isConnected
+      ? sanitizarHtmlCorrecao(item.element.innerHTML)
+      : escHtml(item.referenceText || item.text)
     return `
-      <div class="source-item format">
-        <strong>${textoStatus(item.status)} — ${escHtml(tipo)}</strong>
-        <p>${escHtml(item.referenceText || item.text)}</p>
-        <ul class="issue-list">${issues}</ul>
+      <div class="source-item ${item.status === 'format' ? 'format' : 'ok'}">
+        <strong>${item.status === 'format' ? `${textoStatus(item.status)} — ${escHtml(tipo)}` : 'Referência'}</strong>
+        <p>${referenciaHtml}</p>
       </div>
     `
   }
 
   return (item.resultados || []).map(resultado => {
-    const refText = resultado.ref?.text || 'Referência não encontrada na lista final.'
+    const refHtml = htmlFonteReferencia(resultado.ref)
     return `
       <div class="source-item ${resultado.status}">
         <strong>${escHtml(resultado.unit?.raw || item.text)} — ${textoStatus(resultado.status)}</strong>
-        <p>${escHtml(refText)}</p>
+        <p>${refHtml}</p>
       </div>
     `
   }).join('')
 }
 
-function abrirModalFonte(id) {
-  const item = occurrences.find(o => o.id === id)
+function renderSecaoModal(titulo, conteudo, classe) {
+  if (!conteudo) return ''
+  return `
+    <section class="modal-section ${classe || ''}">
+      <h3>${escHtml(titulo)}</h3>
+      ${conteudo}
+    </section>
+  `
+}
+
+function itemRelatorioCitacao(item) {
+  const base = ocorrenciaBaseDaCitacao(item)
+  const issues = Array.from(new Set([...(base?.issues || []), ...(item?.issues || [])]))
+  return { ...base, issues }
+}
+
+function renderModalCitacao(item) {
+  const base = ocorrenciaBaseDaCitacao(item)
+  const relatorioItem = itemRelatorioCitacao(item)
+  const blocoCitacao = renderRelatorioOcorrencia(relatorioItem) + renderCorrecaoOcorrencia(item) + renderComentarioOcorrencia(item)
+  const fontes = renderFonteReferencia(base)
+  return blocoCitacao
+    + renderSecaoModal('Fontes da referência', fontes, 'sources-section')
+}
+
+function renderModalReferenciaLista(item) {
+  return renderRelatorioOcorrencia(item) + renderFonteReferencia(item) + renderCorrecaoOcorrencia(item) + renderComentarioOcorrencia(item)
+}
+
+function abrirModalItem(item) {
   if (!item || !sourceModal) return
+  sourceModalOccurrenceId = item.id
+  sourceModalItem = item
+  if (sourceModalTitle) sourceModalTitle.textContent = ocorrenciaEhCitacao(item) ? 'Citação' : 'Fonte da referência'
   sourceModalCitation.textContent = item.text || ''
-  sourceModalBody.innerHTML = renderFonteReferencia(item)
+  sourceModalBody.innerHTML = ocorrenciaEhCitacao(item)
+    ? renderModalCitacao(item)
+    : renderModalReferenciaLista(item)
   sourceModal.classList.remove('hidden')
 }
 
+function abrirModalFonte(id) {
+  abrirModalItem(occurrences.find(o => o.id === id))
+}
+
+function criarOcorrenciaManualReferencia(ref) {
+  const existente = occurrences.find(item => item.element === ref.element && item.status === 'format')
+  if (existente) return existente
+  return {
+    id: `manual-ref-${ref.index}-${Date.now()}`,
+    text: ref.text,
+    status: 'ok',
+    resultados: [],
+    referenceText: ref.text,
+    referenceType: 'referencia-manual',
+    issues: [],
+    element: ref.element,
+  }
+}
+
 function fecharModalFonte() {
+  sourceModalOccurrenceId = null
+  sourceModalItem = null
   sourceModal?.classList.add('hidden')
+}
+
+function blocoDaOcorrencia(item) {
+  return item?.element?.closest?.('p, li, h1, h2, h3, h4, h5, h6') || item?.element || null
+}
+
+function ocorrenciasRelacionadasAoTexto(text, bloco) {
+  const chave = normalizarTexto(text)
+  if (!chave) return []
+  return occurrences.filter(item => {
+    if (bloco && blocoDaOcorrencia(item) !== bloco) return false
+    const textos = [item.text, item.referenceText, textoAtualOcorrencia(item)].filter(Boolean)
+    return textos.some(valor => normalizarTexto(valor) === chave)
+  })
+}
+
+function validarCorrecaoAplicada(originalItem, textoCorrigido, bloco) {
+  const relacionados = ocorrenciasRelacionadasAoTexto(textoCorrigido, bloco)
+  if (ocorrenciaEhCitacao(originalItem)) {
+    const marcacaoOk = relacionados.some(item => item.status === 'ok')
+    const pendencias = relacionados.filter(item => item.status !== 'ok')
+    return {
+      corrigida: marcacaoOk && pendencias.length === 0,
+      relacionados,
+      pendencias,
+    }
+  }
+
+  const pendencias = relacionados.filter(item => item.status === 'format')
+  return {
+    corrigida: pendencias.length === 0,
+    relacionados,
+    pendencias,
+  }
+}
+
+function registrarCorrecaoValidada(item, antes, depois, antesHtml, depoisHtml) {
+  correcoesAplicadas.push({
+    id: `correcao-${Date.now()}-${correcoesAplicadas.length + 1}`,
+    tipo: ocorrenciaEhCitacao(item) ? 'citacao' : 'referencia',
+    antes,
+    depois,
+    antesHtml,
+    depoisHtml,
+    registradaEm: new Date().toISOString(),
+  })
+  window.refsCorrecoesAplicadas = correcoesAplicadas
+  atualizarEstadoExportacao()
+}
+
+function registrarComentarioWord(item, autor, comentario) {
+  const alvo = textoAtualOcorrencia(item)
+  const alvoHtml = htmlAnteriorOcorrencia(item)
+  comentariosAplicados.push({
+    id: `comentario-${Date.now()}-${comentariosAplicados.length + 1}`,
+    tipo: ocorrenciaEhCitacao(item) ? 'citacao' : 'referencia',
+    alvo,
+    alvoHtml,
+    autor,
+    comentario,
+    registradaEm: new Date().toISOString(),
+  })
+  window.refsComentariosAplicados = comentariosAplicados
+  atualizarEstadoExportacao()
+}
+
+function formatarPendenciasCorrecao(pendencias) {
+  return pendencias.map(item => {
+    if (item.status === 'format' && item.issues?.length) {
+      return `${textoStatus(item.status)}: ${item.issues.join(' | ')}`
+    }
+    return textoStatus(item.status)
+  }).join('\n')
+}
+
+function adicionarComentarioOcorrencia() {
+  const item = occurrences.find(o => o.id === sourceModalOccurrenceId) || sourceModalItem
+  const authorInput = sourceModalBody?.querySelector('#commentAuthor')
+  const commentInput = sourceModalBody?.querySelector('#commentText')
+  const feedback = sourceModalBody?.querySelector('#commentFeedback')
+  if (!item || !authorInput || !commentInput || !ocorrenciaPodeSerCorrigida(item)) return
+
+  const autor = normalizarEspacos(authorInput.value || '') || 'ABeNiTa'
+  const comentario = normalizarEspacos(commentInput.value || '')
+  if (!comentario) {
+    if (feedback) feedback.textContent = 'Digite o texto do comentário antes de adicionar.'
+    return
+  }
+
+  comentarioAutorPadrao = autor
+  registrarComentarioWord(item, autor, comentario)
+  commentInput.value = ''
+  if (feedback) feedback.textContent = `Comentário registrado para exportação. Total de comentários: ${comentariosAplicados.length}.`
+}
+
+function formatarSelecaoCorrecao(command) {
+  const editorCorrecao = sourceModalBody?.querySelector('#correctionText')
+  if (!editorCorrecao) return
+  editorCorrecao.focus()
+  document.execCommand(command, false, null)
+}
+
+function aplicarCorrecaoOcorrencia() {
+  const item = occurrences.find(o => o.id === sourceModalOccurrenceId) || sourceModalItem
+  const editorCorrecao = sourceModalBody?.querySelector('#correctionText')
+  const feedback = sourceModalBody?.querySelector('#correctionFeedback')
+  if (!item || !editorCorrecao || !ocorrenciaPodeSerCorrigida(item)) return
+
+  const antes = textoAtualOcorrencia(item)
+  const antesHtml = sanitizarHtmlCorrecao(item.element.innerHTML)
+  const depois = normalizarEspacos(editorCorrecao.textContent || '')
+  const depoisHtml = sanitizarHtmlCorrecao(editorCorrecao.innerHTML)
+  const bloco = blocoDaOcorrencia(item)
+  if (!normalizarEspacos(depois)) {
+    if (feedback) feedback.textContent = 'Informe o texto corrigido antes de aplicar.'
+    return
+  }
+  if (antes === depois && antesHtml === depoisHtml) {
+    if (feedback) feedback.textContent = 'O texto corrigido está igual ao texto atual.'
+    return
+  }
+
+  item.element.innerHTML = depoisHtml
+  conferirReferencias()
+
+  const validacao = validarCorrecaoAplicada(item, depois, bloco)
+  if (validacao.corrigida) {
+    registrarCorrecaoValidada(item, antes, depois, antesHtml, depoisHtml)
+    renderSummary(ultimoResultado)
+    const novoItem = validacao.relacionados.find(o => o.status === 'ok') || validacao.relacionados[0]
+    if (novoItem) {
+      focusOccurrence(novoItem.id)
+      abrirModalFonte(novoItem.id)
+      const novoFeedback = sourceModalBody?.querySelector('#correctionFeedback')
+      if (novoFeedback) novoFeedback.textContent = 'Correção validada e registrada para o futuro arquivo corrigido.'
+    } else {
+      fecharModalFonte()
+      dropZone.textContent = 'Correção validada e registrada para o futuro arquivo corrigido.'
+    }
+    return
+  }
+
+  const pendencias = formatarPendenciasCorrecao(validacao.pendencias)
+  const novoItem = validacao.relacionados[0]
+  if (novoItem) abrirModalFonte(novoItem.id)
+  const novoFeedback = sourceModalBody?.querySelector('#correctionFeedback')
+  if (novoFeedback) {
+    novoFeedback.textContent = pendencias
+      ? `A correção foi aplicada, mas ainda há pendências:\n${pendencias}`
+      : 'A correção foi aplicada, mas a ocorrência não foi reconhecida como totalmente resolvida.'
+  }
+}
+
+function ocultarImagensDoEditor() {
+  editor.querySelectorAll('img, svg, picture').forEach(el => el.remove())
 }
 
 async function importDocx(file) {
   if (!file) return
+  limparCorrecoesAplicadas()
   stripMarks()
   dropZone.textContent = `Importando ${file.name}...`
   const arrayBuffer = await file.arrayBuffer()
+  importedDocxArrayBuffer = arrayBuffer.slice(0)
+  importedDocxName = file.name
+  atualizarEstadoExportacao()
   const result = await window.mammoth.convertToHtml({ arrayBuffer }, {
+    convertImage: () => Promise.resolve([]),
     styleMap: [
       "p[style-name='Title'] => h1:fresh",
       "p[style-name='Heading 1'] => h1:fresh",
@@ -1305,8 +2055,51 @@ async function importDocx(file) {
     ],
   })
   editor.innerHTML = result.value || '<p></p>'
+  ocultarImagensDoEditor()
   conferirReferencias()
   dropZone.innerHTML = `<strong>${escHtml(file.name)}</strong> importado. Conferencia executada automaticamente.`
+}
+
+async function exportarDocxCorrigido() {
+  if (!importedDocxArrayBuffer) {
+    alert('Importe um DOCX antes de baixar o arquivo corrigido.')
+    return
+  }
+  if (!correcoesAplicadas.length && !comentariosAplicados.length) {
+    alert('Ainda não há correções ou comentários para aplicar.')
+    return
+  }
+  if (!window.refsBridge?.exportarDocxCorrigido) {
+    alert('A exportação do DOCX corrigido está disponível no app desktop do ABeNiTa.')
+    return
+  }
+
+  exportCorrectedBtn.disabled = true
+  exportCorrectedBtn.textContent = 'Gerando...'
+  try {
+    const result = await window.refsBridge.exportarDocxCorrigido({
+      fileName: importedDocxName || 'abenita.docx',
+      arrayBuffer: importedDocxArrayBuffer,
+      correcoes: correcoesAplicadas,
+      comentarios: comentariosAplicados,
+    })
+    if (result?.cancelado) return
+    if (!result?.ok) {
+      alert(result?.erro || 'Não foi possível gerar o DOCX corrigido.')
+      return
+    }
+    const ignoradas = Array.isArray(result.ignoradas) ? result.ignoradas.length : 0
+    dropZone.textContent = `DOCX corrigido salvo. Correções aplicadas: ${result.aplicadas || 0}; comentários inseridos: ${result.comentariosInseridos || 0}${ignoradas ? `; não encontradas: ${ignoradas}` : ''}.`
+    if (ignoradas) {
+      alert(`DOCX salvo, mas ${ignoradas} item(ns) não foram encontrados no arquivo original. O restante foi aplicado sem alterar outras áreas.`)
+    }
+  } catch (err) {
+    console.error(err)
+    alert(`Não foi possível gerar o DOCX corrigido: ${err.message || err}`)
+  } finally {
+    exportCorrectedBtn.textContent = 'Baixar DOCX corrigido'
+    atualizarEstadoExportacao()
+  }
 }
 
 docxInput.addEventListener('change', event => {
@@ -1318,11 +2111,19 @@ docxInput.addEventListener('change', event => {
 })
 
 runBtn.addEventListener('click', conferirReferencias)
-clearBtn.addEventListener('click', stripMarks)
+exportCorrectedBtn?.addEventListener('click', exportarDocxCorrigido)
+clearBtn.addEventListener('click', () => {
+  limparCorrecoesAplicadas()
+  stripMarks()
+})
 validateUrlsBtn?.addEventListener('click', validarUrlsReferencias)
 
 pasteModeBtn.addEventListener('click', async () => {
+  limparCorrecoesAplicadas()
   stripMarks()
+  importedDocxArrayBuffer = null
+  importedDocxName = ''
+  atualizarEstadoExportacao()
   const text = await navigator.clipboard.readText().catch(() => '')
   if (text) {
     editor.innerHTML = normalizarParagrafoHtml(text)
@@ -1370,15 +2171,44 @@ referencesListEl?.addEventListener('click', event => {
 })
 
 editor.addEventListener('click', event => {
-  const mark = event.target.closest('.ref-mark, .ref-format')
+  const mark = event.target.closest('.ref-mark, .ref-format, .ref-list-entry')
   if (!mark) return
-  focusOccurrence(mark.dataset.occurrenceId)
   if (mark.classList.contains('ref-mark') || mark.classList.contains('ref-format')) {
+    focusOccurrence(mark.dataset.occurrenceId)
     abrirModalFonte(mark.dataset.occurrenceId)
+    return
   }
+
+  const refIndex = Number(mark.dataset.refIndex)
+  const ref = ultimoResultado?.referencias?.find(item => item.index === refIndex)
+  if (!ref?.element?.isConnected) return
+
+  document.querySelectorAll('.ref-mark.active, .ref-format.active, .ref-list-entry.active').forEach(el => el.classList.remove('active'))
+  ref.element.classList.add('active')
+  const range = document.createRange()
+  range.selectNodeContents(ref.element)
+  const selection = window.getSelection()
+  selection.removeAllRanges()
+  selection.addRange(range)
+  abrirModalItem(criarOcorrenciaManualReferencia(ref))
 })
 
 sourceModalClose?.addEventListener('click', fecharModalFonte)
+sourceModalBody?.addEventListener('mousedown', event => {
+  if (event.target.closest('[data-format-command]')) event.preventDefault()
+})
+sourceModalBody?.addEventListener('click', event => {
+  const formatBtn = event.target.closest('[data-format-command]')
+  if (formatBtn) {
+    formatarSelecaoCorrecao(formatBtn.dataset.formatCommand)
+    return
+  }
+  if (event.target.closest('[data-action="add-word-comment"]')) {
+    adicionarComentarioOcorrencia()
+    return
+  }
+  if (event.target.closest('[data-action="apply-correction"]')) aplicarCorrecaoOcorrencia()
+})
 sourceModal?.addEventListener('click', event => {
   if (event.target.closest('[data-source-close]')) fecharModalFonte()
 })
@@ -1406,3 +2236,4 @@ dropZone.addEventListener('drop', event => {
 
 renderFilters()
 renderOccurrences()
+atualizarEstadoExportacao()

@@ -1,8 +1,8 @@
-# Refs
+﻿# ABeNiTa
 
-Aplicativo independente para conferência de citações autor-data, lista final de referências e checagem ABNT.
+Aplicativo independente para conferencia de citacoes autor-data, lista final de referencias e checagem ABNT.
 
-Este repositório não depende do Normando/Legislator.
+Este repositorio nao depende do Normando/Legislator.
 
 ## Estrutura
 
@@ -19,7 +19,7 @@ electron/
 package.json
 ```
 
-O diretório `app/` é a fonte única da interface e da lógica principal. A versão desktop carrega esses mesmos arquivos via Electron.
+O diretorio `app/` e a fonte unica da interface e da logica principal. A versao desktop carrega esses mesmos arquivos via Electron.
 
 ## Rodar como app web local
 
@@ -45,10 +45,10 @@ npm run dev
 ## Gerar instalador Windows
 
 ```powershell
-npm run package:win
+npm run release:win
 ```
 
-O instalador será gerado em `dist/`.
+O instalador sera gerado em `dist/`.
 
 ## Ponte desktop
 
@@ -56,7 +56,7 @@ No Electron, a interface tem acesso a:
 
 ```js
 window.refsBridge.validarUrls(urls)
+window.refsBridge.exportarDocxCorrigido(payload)
 ```
 
-Essa função valida URLs pelo processo Node local, sem depender de servidor central e com menos limitações de CORS.
-
+Essas funcoes rodam pelo processo Node local, sem depender de servidor central e com menos limitacoes de CORS.

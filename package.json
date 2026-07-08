@@ -9,14 +9,16 @@
     "package:win": "electron-builder --win",
     "release:win": "electron-builder --win --publish never"
   },
-  "dependencies": {},
+  "dependencies": {
+    "jszip": "^3.10.1"
+  },
   "devDependencies": {
     "electron": "^29.1.0",
     "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "br.com.luizbmc.refs",
-    "productName": "Refs",
+    "productName": "ABeNiTa",
     "directories": {
       "output": "dist"
     },
