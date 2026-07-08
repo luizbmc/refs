@@ -1719,10 +1719,14 @@ function ocorrenciaBaseDaCitacao(item) {
   return occurrences.find(o => o.element === item.element && o.status !== 'format' && o.resultados?.length) || item
 }
 
+function corrigirEspacoIndicadores(text) {
+  return String(text || '').replace(/\b([pvn])\.(?=\d)/gi, (match, letra) => `${letra}. `)
+}
+
 function sugerirCorrecaoOcorrencia(item) {
   const atual = textoAtualOcorrencia(item)
   const base = ocorrenciaBaseDaCitacao(item)
-  let sugestao = atual
+  let sugestao = corrigirEspacoIndicadores(atual)
 
   ;(base.resultados || []).forEach(resultado => {
     const raw = resultado.unit?.authorsRaw || ''
