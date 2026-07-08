@@ -660,6 +660,68 @@ function autorExisteNaLista(authorText, referencias) {
   return referencias.some(ref => scoreReferencia(unit, ref, false) > 0)
 }
 
+function palavrasDistintivasAutor(authorText) {
+  return normalizarTexto(authorText)
+    .split(/\s+/)
+    .filter(word => word.length >= 4)
+    .filter(word => !['PARA', 'CONFORME', 'CONSOANTE', 'SEGUNDO', 'APUD', 'CITADO', 'CITADA'].includes(word))
+}
+
+function tokensAutoriaComIndice(text) {
+  const tokens = []
+  String(text || '').replace(/\S+/g, (token, index) => {
+    tokens.push({ token, index })
+    return token
+  })
+  return tokens
+}
+
+function melhorAutorNarrativo(autorAntes, ano, referencias) {
+  if (!autorAntes?.text) return autorAntes
+  const tokens = tokensAutoriaComIndice(autorAntes.text)
+  const candidatos = tokens
+    .filter(item => /^[A-ZÀ-Ý]/.test(item.token))
+    .map(item => ({
+      text: autorAntes.text.slice(item.index).trim(),
+      start: autorAntes.start + item.index,
+    }))
+    .filter(item => item.text)
+
+  let melhor = null
+  candidatos.forEach(candidato => {
+    const unit = {
+      authorsRaw: candidato.text,
+      authors: autoresDaCitacao(candidato.text),
+      ano: String(ano || '').toLowerCase(),
+    }
+    const refScore = referencias
+      .map(ref => ({ ref, score: scoreReferencia(unit, ref, true) || scoreReferencia(unit, ref, false) }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score)[0]
+    if (!refScore) return
+
+    const missingWords = palavrasDistintivasAutor(candidato.text)
+      .filter(word => !contemTermoNormalizado(refScore.ref.normal, word))
+      .length
+    const wordCount = normalizarTexto(candidato.text).split(/\s+/).filter(Boolean).length
+    const rank = {
+      missingWords,
+      score: refScore.score,
+      wordCount,
+      start: candidato.start,
+    }
+    if (!melhor
+      || rank.missingWords < melhor.rank.missingWords
+      || (rank.missingWords === melhor.rank.missingWords && rank.score > melhor.rank.score)
+      || (rank.missingWords === melhor.rank.missingWords && rank.score === melhor.rank.score && rank.wordCount > melhor.rank.wordCount)
+      || (rank.missingWords === melhor.rank.missingWords && rank.score === melhor.rank.score && rank.wordCount === melhor.rank.wordCount && rank.start > melhor.rank.start)) {
+      melhor = { ...candidato, rank }
+    }
+  })
+
+  return melhor ? { text: melhor.text, start: melhor.start } : autorAntes
+}
+
 function nodeEstaEmItalico(node) {
   return !!node?.parentElement?.closest('em, i')
 }
@@ -705,21 +767,22 @@ function coletarCitacoes(bodyBlocks, referencias) {
       if (units.length <= 1 && /^[,;\s]*(?:19|20)\d{2}/i.test(inside)) {
         const autorAntes = encontrarAutorAntes(text, match.index)
         const ano = (inside.match(YEAR_RE) || [''])[0].toLowerCase()
-        const aceitarAutorAntes = autorAntes?.text && (
-          temIndicadorCitacaoAntes(text, autorAntes.start)
+        const autorNarrativo = melhorAutorNarrativo(autorAntes, ano, referencias)
+        const aceitarAutorAntes = autorNarrativo?.text && (
+          temIndicadorCitacaoAntes(text, autorNarrativo.start)
           || temIndicadorCitacaoDepois(text, regex.lastIndex)
-          || autorAnoExisteNaLista(autorAntes.text, ano, referencias)
-          || autorExisteNaLista(autorAntes.text, referencias)
+          || autorAnoExisteNaLista(autorNarrativo.text, ano, referencias)
+          || autorExisteNaLista(autorNarrativo.text, referencias)
         )
         if (aceitarAutorAntes) {
           units = [{
-            raw: `${autorAntes.text} (${inside})`,
-            authorsRaw: autorAntes.text,
-            authors: autoresDaCitacao(autorAntes.text),
+            raw: `${autorNarrativo.text} (${inside})`,
+            authorsRaw: autorNarrativo.text,
+            authors: autoresDaCitacao(autorNarrativo.text),
             ano,
             narrativa: true,
           }]
-          start = autorAntes.start
+          start = autorNarrativo.start
           display = text.slice(start, regex.lastIndex)
         }
       }
