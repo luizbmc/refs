@@ -1,6 +1,6 @@
 {
   "name": "refs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Conferência de citações autor-data e referências bibliográficas.",
   "author": "Luiz BMC",
   "main": "electron/main.js",
@@ -28,6 +28,7 @@
       "package.json"
     ],
     "win": {
+      "icon": "app/icon.ico",
       "target": "nsis"
     },
     "nsis": {

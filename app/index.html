@@ -22,8 +22,17 @@
       </label>
       <button id="pasteModeBtn" type="button">Colar texto</button>
       <button id="runBtn" type="button" class="primary">Conferir referências</button>
+      <button id="manualReplaceBtn" type="button">Alterar texto selecionado</button>
+      <button id="manualCommentBtn" type="button">Comentar texto selecionado</button>
       <button id="exportCorrectedBtn" type="button" disabled>Baixar DOCX corrigido</button>
       <button id="clearBtn" type="button">Limpar marcações</button>
+      <div class="text-search" role="search" aria-label="Buscar no texto">
+        <input id="textSearchInput" type="search" placeholder="Buscar no texto" />
+        <button id="textSearchCaseBtn" type="button" title="Diferenciar maiúsculas e minúsculas">Aa</button>
+        <button id="textSearchPrevBtn" type="button" title="Ocorrência anterior">‹</button>
+        <button id="textSearchNextBtn" type="button" title="Próxima ocorrência">›</button>
+        <span id="textSearchCount">0/0</span>
+      </div>
     </div>
   </header>
 
@@ -44,10 +53,10 @@
 
     <section class="workspace">
       <div id="dropZone" class="drop-zone">
-        <strong>Importe um DOCX</strong> ou cole o texto abaixo para começar.
+        <strong>Importe um DOCX</strong> ou use o botão Colar texto para começar.
       </div>
-      <article id="editor" class="editor" contenteditable="true" spellcheck="true">
-        <p>Cole aqui um artigo para conferência de referências.</p>
+      <article id="editor" class="editor" tabindex="0" aria-label="Texto importado para conferência">
+        <p>Importe um DOCX ou use o botão Colar texto para iniciar a conferência de referências.</p>
       </article>
     </section>
 

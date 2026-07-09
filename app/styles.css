@@ -70,6 +70,49 @@ h1 {
   gap: 8px;
 }
 
+.text-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fffdf8;
+}
+
+.text-search input {
+  width: 170px;
+  min-width: 100px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 13px/1.2 "Segoe UI", Arial, sans-serif;
+  outline: none;
+  padding: 5px 6px;
+}
+
+.text-search button {
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border-radius: 5px;
+  font: 700 12px/1 "Segoe UI", Arial, sans-serif;
+}
+
+.text-search button.active {
+  border-color: var(--accent);
+  background: #dff0df;
+  color: #214532;
+}
+
+.text-search span {
+  min-width: 38px;
+  color: var(--muted);
+  font: 700 11px/1 "Segoe UI", Arial, sans-serif;
+  text-align: center;
+}
+
 button, .file-button {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -475,6 +518,8 @@ button:disabled,
   font-size: 12pt;
   line-height: 1.55;
   outline: none;
+  cursor: text;
+  user-select: text;
 }
 
 .editor p {
@@ -533,6 +578,22 @@ button:disabled,
 
 .ref-list-entry.active {
   outline: 2px solid rgba(34, 92, 105, .22);
+}
+
+.text-search-mark {
+  border-radius: 2px;
+  background: #fff29b;
+  box-shadow: 0 0 0 1px rgba(180, 145, 0, .24);
+}
+
+.text-search-mark.active {
+  background: #ffbd66;
+  box-shadow: 0 0 0 2px rgba(185, 91, 0, .38);
+}
+
+.manual-comment-mark {
+  border-bottom: 2px dotted #5c6fb7;
+  background: rgba(92, 111, 183, .08);
 }
 
 .source-modal.hidden { display: none; }
@@ -761,6 +822,36 @@ button:disabled,
 .correction-editor:focus {
   outline: 2px solid rgba(34, 92, 105, .22);
   border-color: #7aa2ab;
+}
+
+.correction-scope {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  border: 1px solid #e5ddcf;
+  border-radius: 6px;
+  background: #fffaf0;
+}
+
+.correction-scope legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font: 700 11px/1.3 "Segoe UI", Arial, sans-serif;
+  text-transform: uppercase;
+}
+
+.correction-scope label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--ink);
+  font: 600 12px/1.35 "Segoe UI", Arial, sans-serif;
+}
+
+.correction-scope input {
+  margin: 0;
 }
 
 .correction-actions {

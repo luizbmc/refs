@@ -12,12 +12,14 @@ const URL_CHECK_HEADERS = {
 };
 
 function createWindow() {
+  const iconPath = path.join(__dirname, '..', 'app', 'icon.ico');
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 980,
     minHeight: 640,
     title: 'ABeNiTa',
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -308,6 +310,10 @@ function extrairRuns(paragraphXml) {
   return runs;
 }
 
+function textoParagrafoXml(paragraphXml) {
+  return extrairRuns(paragraphXml).map(run => run.text).join('');
+}
+
 function substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles) {
   const runs = extrairRuns(paragraphXml);
   const paragraphText = runs.map(run => run.text).join('');
@@ -423,17 +429,27 @@ function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles) {
       return;
     }
 
-    let substituiu = false;
-    xml = xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraphXml) => {
-      if (substituiu) return paragraphXml;
-      if (!normalizarBusca(extrairRuns(paragraphXml).map(run => run.text).join('')).includes(normalizarBusca(antes))) {
-        return paragraphXml;
-      }
-      const novo = substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles);
-      if (!novo || novo === paragraphXml) return paragraphXml;
-      substituiu = true;
-      return novo;
-    });
+    const antesNormalizado = normalizarBusca(antes);
+    const paragrafoNormalizado = normalizarBusca(correcao.paragrafoAntes || '');
+    const tentarSubstituir = (exigirParagrafo) => {
+      let substituiuNestaPassagem = false;
+      xml = xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraphXml) => {
+        if (substituiuNestaPassagem) return paragraphXml;
+        const textoNormalizado = normalizarBusca(textoParagrafoXml(paragraphXml));
+        if (!textoNormalizado.includes(antesNormalizado)) return paragraphXml;
+        if (exigirParagrafo && paragrafoNormalizado && !textoNormalizado.includes(paragrafoNormalizado)) {
+          return paragraphXml;
+        }
+        const novo = substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles);
+        if (!novo || novo === paragraphXml) return paragraphXml;
+        substituiuNestaPassagem = true;
+        return novo;
+      });
+      return substituiuNestaPassagem;
+    };
+
+    let substituiu = paragrafoNormalizado ? tentarSubstituir(true) : false;
+    if (!substituiu) substituiu = tentarSubstituir(false);
 
     if (substituiu) aplicadas.push({ index, antes: correcao.antes, depois: correcao.depois });
     else ignoradas.push({ index, antes: correcao.antes, motivo: 'Texto anterior nÃ£o encontrado no DOCX.' });
@@ -505,18 +521,27 @@ function aplicarComentariosDocumentXml(documentXml, comentarios, startId, charSt
       return;
     }
     const commentId = nextId;
-    let substituiu = false;
+    const alvoNormalizado = normalizarBusca(alvo);
+    const paragrafoNormalizado = normalizarBusca(comentario.paragrafoAntes || '');
+    const tentarInserir = (exigirParagrafo) => {
+      let substituiuNestaPassagem = false;
+      xml = xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraphXml) => {
+        if (substituiuNestaPassagem) return paragraphXml;
+        const textoNormalizado = normalizarBusca(textoParagrafoXml(paragraphXml));
+        if (!textoNormalizado.includes(alvoNormalizado)) return paragraphXml;
+        if (exigirParagrafo && paragrafoNormalizado && !textoNormalizado.includes(paragrafoNormalizado)) {
+          return paragraphXml;
+        }
+        const novo = inserirComentarioEmParagrafo(paragraphXml, alvo, commentId, charStyles);
+        if (!novo || novo === paragraphXml) return paragraphXml;
+        substituiuNestaPassagem = true;
+        return novo;
+      });
+      return substituiuNestaPassagem;
+    };
 
-    xml = xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraphXml) => {
-      if (substituiu) return paragraphXml;
-      if (!normalizarBusca(extrairRuns(paragraphXml).map(run => run.text).join('')).includes(normalizarBusca(alvo))) {
-        return paragraphXml;
-      }
-      const novo = inserirComentarioEmParagrafo(paragraphXml, alvo, commentId, charStyles);
-      if (!novo || novo === paragraphXml) return paragraphXml;
-      substituiu = true;
-      return novo;
-    });
+    let substituiu = paragrafoNormalizado ? tentarInserir(true) : false;
+    if (!substituiu) substituiu = tentarInserir(false);
 
     if (substituiu) {
       inseridos.push({ ...comentario, commentId });

@@ -3,6 +3,8 @@ const docxInput = document.getElementById('docxInput')
 const runBtn = document.getElementById('runBtn')
 const clearBtn = document.getElementById('clearBtn')
 const pasteModeBtn = document.getElementById('pasteModeBtn')
+const manualReplaceBtn = document.getElementById('manualReplaceBtn')
+const manualCommentBtn = document.getElementById('manualCommentBtn')
 const occurrencesEl = document.getElementById('occurrences')
 const countBadge = document.getElementById('countBadge')
 const filtersEl = document.getElementById('filters')
@@ -17,6 +19,11 @@ const referencesListEl = document.getElementById('referencesList')
 const referencesCountEl = document.getElementById('referencesCount')
 const validateUrlsBtn = document.getElementById('validateUrlsBtn')
 const exportCorrectedBtn = document.getElementById('exportCorrectedBtn')
+const textSearchInput = document.getElementById('textSearchInput')
+const textSearchCaseBtn = document.getElementById('textSearchCaseBtn')
+const textSearchPrevBtn = document.getElementById('textSearchPrevBtn')
+const textSearchNextBtn = document.getElementById('textSearchNextBtn')
+const textSearchCount = document.getElementById('textSearchCount')
 
 let occurrences = []
 let activeFilter = 'todos'
@@ -31,6 +38,12 @@ let comentariosAplicados = []
 let comentarioAutorPadrao = ''
 let importedDocxArrayBuffer = null
 let importedDocxName = ''
+let buscaTextoDiferenciarCaixa = false
+let buscaTextoMatches = []
+let buscaTextoIndiceAtivo = -1
+let buscaTextoNavegou = false
+let selecaoManualAtual = null
+let comentarioManualAtual = null
 
 const YEAR_RE = /(?:19|20)\d{2}[a-z]?/i
 const YEAR_GLOBAL_RE = /(?:19|20)\d{2}[a-z]?/gi
@@ -128,8 +141,130 @@ function textoBloco(el) {
   return String(el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim()
 }
 
+function limparMarcasBuscaTexto() {
+  editor.querySelectorAll('span.text-search-mark').forEach(mark => {
+    mark.replaceWith(...Array.from(mark.childNodes))
+  })
+  editor.normalize()
+  buscaTextoMatches = []
+  buscaTextoIndiceAtivo = -1
+  buscaTextoNavegou = false
+  atualizarContadorBuscaTexto()
+}
+
+function atualizarContadorBuscaTexto() {
+  if (!textSearchCount) return
+  const total = buscaTextoMatches.length
+  textSearchCount.textContent = total && buscaTextoIndiceAtivo >= 0
+    ? `${buscaTextoIndiceAtivo + 1}/${total}`
+    : `0/${total}`
+  textSearchPrevBtn?.toggleAttribute('disabled', !total)
+  textSearchNextBtn?.toggleAttribute('disabled', !total)
+}
+
+function textNodesBuscaTexto(root) {
+  const nodes = []
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement
+      if (!parent) return NodeFilter.FILTER_REJECT
+      if (parent.closest('.text-search-mark, script, style, button, input, textarea')) {
+        return NodeFilter.FILTER_REJECT
+      }
+      if (!node.nodeValue) return NodeFilter.FILTER_REJECT
+      return NodeFilter.FILTER_ACCEPT
+    },
+  })
+  let node
+  while ((node = walker.nextNode())) nodes.push(node)
+  return nodes
+}
+
+function aplicarMarcasBuscaTexto(query) {
+  const termo = buscaTextoDiferenciarCaixa ? query : query.toLowerCase()
+  let contador = 0
+  textNodesBuscaTexto(editor).forEach(node => {
+    const original = node.nodeValue || ''
+    const alvo = buscaTextoDiferenciarCaixa ? original : original.toLowerCase()
+    const ranges = []
+    let start = 0
+    while (termo && start <= alvo.length) {
+      const index = alvo.indexOf(termo, start)
+      if (index < 0) break
+      ranges.push({ start: index, end: index + termo.length })
+      start = index + Math.max(termo.length, 1)
+    }
+    if (!ranges.length) return
+
+    const fragment = document.createDocumentFragment()
+    let cursor = 0
+    ranges.forEach(range => {
+      if (range.start > cursor) fragment.appendChild(document.createTextNode(original.slice(cursor, range.start)))
+      const mark = document.createElement('span')
+      mark.className = 'text-search-mark'
+      mark.dataset.searchIndex = String(contador++)
+      mark.textContent = original.slice(range.start, range.end)
+      fragment.appendChild(mark)
+      cursor = range.end
+    })
+    if (cursor < original.length) fragment.appendChild(document.createTextNode(original.slice(cursor)))
+    node.parentNode.replaceChild(fragment, node)
+  })
+  buscaTextoMatches = Array.from(editor.querySelectorAll('.text-search-mark'))
+}
+
+function ativarResultadoBuscaTexto(index, options) {
+  const deveNavegar = options?.navegar !== false
+  if (!buscaTextoMatches.length) {
+    buscaTextoIndiceAtivo = -1
+    atualizarContadorBuscaTexto()
+    return
+  }
+  buscaTextoMatches.forEach(el => el.classList.remove('active'))
+  buscaTextoIndiceAtivo = ((index % buscaTextoMatches.length) + buscaTextoMatches.length) % buscaTextoMatches.length
+  const mark = buscaTextoMatches[buscaTextoIndiceAtivo]
+  mark.classList.add('active')
+  if (!deveNavegar) {
+    buscaTextoNavegou = false
+    atualizarContadorBuscaTexto()
+    return
+  }
+  buscaTextoNavegou = true
+  mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  const range = document.createRange()
+  range.selectNodeContents(mark)
+  const selection = window.getSelection()
+  selection.removeAllRanges()
+  selection.addRange(range)
+  atualizarContadorBuscaTexto()
+}
+
+function executarBuscaTexto(indicePreferido, options) {
+  const query = textSearchInput?.value || ''
+  limparMarcasBuscaTexto()
+  if (!query) {
+    atualizarContadorBuscaTexto()
+    return
+  }
+  aplicarMarcasBuscaTexto(query)
+  ativarResultadoBuscaTexto(typeof indicePreferido === 'number' ? indicePreferido : 0, options)
+}
+
+function navegarBuscaTexto(delta) {
+  if (!buscaTextoMatches.length) return
+  if (!buscaTextoNavegou) {
+    ativarResultadoBuscaTexto(buscaTextoIndiceAtivo >= 0 ? buscaTextoIndiceAtivo : 0)
+    return
+  }
+  ativarResultadoBuscaTexto(buscaTextoIndiceAtivo + delta)
+}
+
 function stripMarks() {
+  limparMarcasBuscaTexto()
   editor.querySelectorAll('span.ref-mark').forEach(mark => {
+    mark.replaceWith(...Array.from(mark.childNodes))
+  })
+  editor.querySelectorAll('span.manual-comment-mark').forEach(mark => {
     mark.replaceWith(...Array.from(mark.childNodes))
   })
   editor.querySelectorAll('.refs-heading').forEach(el => el.classList.remove('refs-heading'))
@@ -239,6 +374,36 @@ function autoriaSubstituidaPorLinha(text) {
   return /^_{3,}\.?\s+/.test(String(text || '').trim())
 }
 
+function extrairAutoriaOriginalAbnt(refOrText) {
+  const text = typeof refOrText === 'object' && refOrText ? refOrText.text : refOrText
+  const t = normalizarEspacos(text)
+  const autoresSeparados = t.match(/^([^.;]+,\s+[^;.]+(?:;\s+[^.;]+,\s+[^;.]+)+)\.\s+/)
+  if (autoresSeparados) return autoresSeparados[1].trim()
+
+  const sobrenome = "[A-ZÀ-Ý][A-ZÀ-Ý'’-]+(?:\\s+[A-ZÀ-Ý][A-ZÀ-Ý'’-]+)*"
+  const autorComIniciais = `${sobrenome},\\s+(?:[A-Z]\\.\\s*)+`
+  const autorComEtAl = `${sobrenome},\\s+[^.;]+?\\s+et\\s+al\\.`
+  const autorComEtAlAposPontoEVirgula = `${sobrenome},\\s+[^.;]+;\\s+et\\s+al\\.`
+  const autorComNome = `${sobrenome},\\s+[^.;]+\\.`
+  const autor = `(?:${autorComEtAlAposPontoEVirgula}|${autorComEtAl}|${autorComIniciais}|${autorComNome})`
+  const pessoais = t.match(new RegExp(`^(${autor}(?:\\s*;\\s*${autor})*)\\s+`, 'i'))
+  if (pessoais) return pessoais[1].replace(/\.\s*$/, '').trim()
+
+  if (typeof refOrText === 'object' && refOrText && normalizarEspacos(refOrText.autoriaAntesDoNegrito || '')) {
+    return normalizarEspacos(refOrText.autoriaAntesDoNegrito || '').replace(/\.\s*$/, '').trim()
+  }
+
+  const partes = t.split('.').map(parte => parte.trim()).filter(Boolean)
+  if (!partes.length || partes[0].includes(',')) return ''
+  if (normalizarTexto(partes[0]) === 'BRASIL' && partes.length >= 3) {
+    const segundaTerceira = normalizarTexto(`${partes[1]}. ${partes[2]}`)
+    if (/\b(MINISTERIO|SECRETARIA|CONSELHO|AGENCIA|INSTITUTO|FUNDACAO|UNIVERSIDADE)\b/.test(segundaTerceira)) {
+      return partes.slice(0, 3).join('. ').trim()
+    }
+  }
+  return partes[0].trim()
+}
+
 function textoAntesDoPrimeiroNegrito(root) {
   if (!root) return ''
   let texto = ''
@@ -260,6 +425,7 @@ function textoAntesDoPrimeiroNegrito(root) {
   }
 
   visitar(root)
+  if (!encontrouNegrito) return ''
   return normalizarEspacos(texto).replace(/[.;\s]+$/g, '')
 }
 
@@ -330,15 +496,27 @@ function montarReferencias(referenceBlocks) {
     }
   }
   let ultimaAutoriaExplicita = ''
+  let ultimaAutoriaOriginalExplicita = ''
+  let sequenciaAutoriaSubstituida = 0
   return refs.map((ref, index) => {
     const anos = Array.from(new Set((ref.text.match(YEAR_GLOBAL_RE) || []).map(ano => ano.toLowerCase())))
     const ano = anos[0] || ''
     const autoriaExtraida = extrairAutoriaChaveAbnt(ref)
+    const autoriaOriginalExtraida = extrairAutoriaOriginalAbnt(ref)
+    const usaAutoriaSubstituida = autoriaSubstituidaPorLinha(ref.text)
     const autoriaBusca = autoriaSubstituidaPorLinha(ref.text)
       ? ultimaAutoriaExplicita
       : autoriaExtraida
+    const autoriaSubstituta = autoriaSubstituidaPorLinha(ref.text)
+      ? ultimaAutoriaOriginalExplicita
+      : ''
+    const autoriaGrupoCorrecao = usaAutoriaSubstituida && ultimaAutoriaOriginalExplicita
+      ? `autoria-${sequenciaAutoriaSubstituida}`
+      : ''
     if (autoriaExtraida && !autoriaSubstituidaPorLinha(ref.text)) {
+      sequenciaAutoriaSubstituida += 1
       ultimaAutoriaExplicita = autoriaExtraida
+      ultimaAutoriaOriginalExplicita = autoriaOriginalExtraida
     }
     const normal = normalizarTexto(autoriaBusca ? `${autoriaBusca} ${ref.text}` : ref.text)
     return {
@@ -348,6 +526,8 @@ function montarReferencias(referenceBlocks) {
       anos,
       normal,
       autoriaBusca,
+      autoriaSubstituta,
+      autoriaGrupoCorrecao,
       inicioNormal: autoriaBusca && autoriaSubstituidaPorLinha(ref.text)
         ? autoriaBusca
         : normalizarTexto(ref.text.split('.')[0] || ref.text),
@@ -424,6 +604,9 @@ function problemasEspacoIndicadores(text) {
   if (/\bp\.\d/i.test(t)) issues.push('Insira espaço entre "p." e o número da página.')
   if (/\bv\.\d/i.test(t)) issues.push('Insira espaço entre "v." e o número do volume.')
   if (/\bn\.\d/i.test(t)) issues.push('Insira espaço entre "n." e o número.')
+  if (/\bp\.\s*\d{4,}(?![\d.])/i.test(t)) {
+    issues.push('Número de página com milhar deve usar ponto: "p. 2.140".')
+  }
   return issues
 }
 
@@ -896,14 +1079,17 @@ function sobrenomePrincipalAutor(author) {
   return ultimo
 }
 
-function scoreReferencia(unit, ref, exigirAno) {
+function detalharScoreReferencia(unit, ref, exigirAno) {
   const anoOk = unit.ano && ((ref.anos || []).includes(unit.ano) || ref.ano === unit.ano)
-  if (exigirAno && !anoOk) return 0
+  if (exigirAno && !anoOk) {
+    return { score: 0, hits: 0, autoresComHit: 0, totalAutores: (unit.authors || []).length, anoOk }
+  }
 
   const autores = unit.authors || []
-  if (!autores.length) return 0
+  if (!autores.length) return { score: 0, hits: 0, autoresComHit: 0, totalAutores: 0, anoOk }
 
   let hits = 0
+  let autoresComHit = 0
   for (const author of autores) {
     const words = author.split(/\s+/).filter(w => w.length > 1)
     if (!words.length) continue
@@ -922,29 +1108,53 @@ function scoreReferencia(unit, ref, exigirAno) {
     const wordHits = words.filter(w => contemTermoNormalizado(ref.normal, w)).length
     if (phraseHit || inicioHit || varianteInicioHit || (sobrenomeInicioHit && (nomeDistintivoHit || nomeSimilarHit))) {
       hits += inicioHit ? 3 : 2
+      autoresComHit += 1
     } else if (!autoriaComposta && wordHits >= Math.min(words.length, 2)) {
       hits += 1
+      autoresComHit += 1
     }
   }
 
-  if (!hits) return 0
-  return (anoOk ? 100 : 45) + hits * 10
+  if (!hits) return { score: 0, hits: 0, autoresComHit: 0, totalAutores: autores.length, anoOk }
+  return {
+    score: (anoOk ? 100 : 45) + hits * 10,
+    hits,
+    autoresComHit,
+    totalAutores: autores.length,
+    anoOk,
+  }
+}
+
+function scoreReferencia(unit, ref, exigirAno) {
+  return detalharScoreReferencia(unit, ref, exigirAno).score
 }
 
 function vincularUnidade(unit, referencias) {
   if (unit?.autorAusente) return { status: 'authorless', ref: null }
 
   const comAno = referencias
-    .map(ref => ({ ref, score: scoreReferencia(unit, ref, true) }))
+    .map(ref => ({ ref, ...detalharScoreReferencia(unit, ref, true) }))
     .filter(item => item.score > 0)
-    .sort((a, b) => b.score - a.score)[0]
-
-  if (comAno) return { status: 'ok', ref: comAno.ref }
+    .sort((a, b) => b.score - a.score || b.autoresComHit - a.autoresComHit || b.hits - a.hits)[0]
 
   const semAno = referencias
-    .map(ref => ({ ref, score: scoreReferencia(unit, ref, false) }))
+    .map(ref => ({ ref, ...detalharScoreReferencia(unit, ref, false) }))
     .filter(item => item.score > 0)
-    .sort((a, b) => b.score - a.score)[0]
+    .sort((a, b) => b.autoresComHit - a.autoresComHit || b.hits - a.hits || b.score - a.score)[0]
+
+  if (comAno) {
+    const matchComAnoIncompleto = comAno.autoresComHit < comAno.totalAutores
+    const semAnoMaisEspecifico = semAno
+      && semAno.ref !== comAno.ref
+      && (
+        semAno.autoresComHit > comAno.autoresComHit
+        || (semAno.autoresComHit === comAno.autoresComHit && semAno.hits >= comAno.hits + 2)
+      )
+    if (matchComAnoIncompleto && semAnoMaisEspecifico) {
+      return { status: 'warning', ref: semAno.ref }
+    }
+    return { status: 'ok', ref: comAno.ref }
+  }
 
   if (semAno) return { status: 'warning', ref: semAno.ref }
   return { status: 'missing', ref: null }
@@ -975,9 +1185,10 @@ function classificarReferenciaAbnt(text) {
   const temOnline = /\bDISPONI?VEL EM\b|\bDISPON\s+VEL EM\b|\bACESSO EM\b/.test(n) || /https?:\/\/|www\./i.test(t)
   const temVolumeOuNumero = /\bv\.\s*\d+[A-Za-z]?/i.test(t) || /\bn\.\s*\d+[A-Za-z]?/i.test(t)
   const temPeriodico = temVolumeOuNumero || /\bp\.\s*\d+/i.test(t)
+  const termoJuridico = '(?:Constituição|Lei(?:\\s+Complementar)?|Decreto(?:-Lei)?|Portaria|Resolução|Medida\\s+Provisória|Jurisprudência|Acórdão)'
 
-  if (/^(BRASIL|[A-ZÀ-Ý ]{3,})\.\s+(?:CONSTITUICAO|CONSTITUIÇÃO|LEI|DECRETO|PORTARIA|RESOLUCAO|RESOLUÇÃO|MEDIDA PROVISORIA|MEDIDA PROVISÓRIA|JURISPRUDENCIA|JURISPRUDÊNCIA|ACORDAO|ACÓRDÃO)\b/.test(n)) return 'legislacao'
-  if (/^(CONSTITUICAO|CONSTITUIÇÃO|LEI|DECRETO|PORTARIA|RESOLUCAO|RESOLUÇÃO|MEDIDA PROVISORIA|MEDIDA PROVISÓRIA|ACORDAO|ACÓRDÃO)\b/.test(n)) return 'legislacao'
+  if (new RegExp(`^(?:BRASIL|[A-ZÀ-Ý][A-ZÀ-Ý ]{2,})\\.\\s+${termoJuridico}\\b`, 'i').test(t)) return 'legislacao'
+  if (new RegExp(`^${termoJuridico}\\b`, 'i').test(t)) return 'legislacao'
   if (/\b(DISSERTACAO|DISSERTAÇÃO|TESE|MONOGRAFIA|TRABALHO DE CONCLUSAO|TRABALHO DE CONCLUSÃO)\b/.test(n)) return 'tese'
   if (/\b(YOUTUBE|VIMEO|VIDEO|VÍDEO|FILME|DOCUMENTARIO|DOCUMENTÁRIO|CANAL|PODCAST)\b/.test(n) || /\b\d+\s*(?:min|h)\b/i.test(t)) return 'audiovisual'
   if (/\bANAIS|CONGRESSO|SEMINARIO|SEMINÁRIO|ENCONTRO|SIMP[OÓ]SIO|CONFER[EÊ]NCIA\b/i.test(t)) return 'evento'
@@ -1054,12 +1265,35 @@ function extrairAutoriaChaveAbnt(refOrText) {
   return primeira
 }
 
+function extrairAutoriaAgrupamentoAno(refOrText) {
+  const text = typeof refOrText === 'object' && refOrText ? refOrText.text : refOrText
+  const t = normalizarEspacos(text)
+  const primeiraParte = normalizarTexto(t.split('.')[0] || '')
+  if (primeiraParte === 'BRASIL') return 'BRASIL'
+  if (primeiraParte && !primeiraParte.includes(',')) return primeiraParte
+  return extrairAutoriaChaveAbnt(refOrText)
+}
+
 function extrairAnoReferenciaPrincipal(ref) {
   const text = String(ref?.text || '')
   const corteOnline = text.search(/Dispon\S*\s+em:?|Acesso\s+em:?|https?:\/\//i)
   const trechoPrincipal = corteOnline >= 0 ? text.slice(0, corteOnline) : text
   const anos = trechoPrincipal.match(/(?:18|19|20)\d{2}[a-z]?/gi) || text.match(/(?:18|19|20)\d{2}[a-z]?/gi) || []
   return anos.length ? anos[anos.length - 1].toLowerCase() : ''
+}
+
+function indiceUltimoAnoPrincipal(text) {
+  const valor = String(text || '')
+  const corteOnline = valor.search(/Dispon\S*\s+em:?|Acesso\s+em:?|https?:\/\//i)
+  const limite = corteOnline >= 0 ? corteOnline : valor.length
+  const trechoPrincipal = valor.slice(0, limite)
+  const re = /(?:18|19|20)\d{2}[a-z]?/gi
+  let match
+  let ultimo = null
+  while ((match = re.exec(trechoPrincipal))) {
+    ultimo = { index: match.index, text: match[0] }
+  }
+  return ultimo
 }
 
 function autoresMultiplosSemPontoEVirgula(text) {
@@ -1110,12 +1344,13 @@ function validarNegritoReferencia(ref, tipo) {
   const issues = []
   const text = normalizarEspacos(ref.text || '')
   const negritos = (ref.negritos || []).map(normalizarEspacos).filter(Boolean)
-  const exigeNegrito = ['livro', 'artigoPeriodico', 'jornal', 'tese'].includes(tipo)
+  const exigeNegrito = ['livro', 'artigoPeriodico', 'jornal', 'tese', 'legislacao'].includes(tipo)
   const rotulos = {
     livro: 'Livro/e-book deve ter o título principal em negrito.',
     artigoPeriodico: 'Artigo de periódico deve ter o nome da revista ou periódico em negrito.',
     jornal: 'Artigo de jornal deve ter o nome do jornal em negrito.',
     tese: 'Trabalho acadêmico deve ter o título principal em negrito.',
+    legislacao: 'Documento jurídico deve ter o nome da norma em negrito.',
   }
 
   if (exigeNegrito && !negritos.length) {
@@ -1319,13 +1554,16 @@ function aplicarMarcacoes(matches, referencias) {
 function anexarProblemasAbnt(list, referencias) {
   const gruposAutorAno = {}
   let ultimaAutoriaExplicita = ''
+  let ultimaAutoriaAgrupamentoExplicita = ''
   referencias.forEach(ref => {
     const autoriaExtraida = extrairAutoriaChaveAbnt(ref)
+    const autoriaAgrupamentoExtraida = extrairAutoriaAgrupamentoAno(ref)
     const autoria = autoriaSubstituidaPorLinha(ref.text)
-      ? ultimaAutoriaExplicita
-      : autoriaExtraida
+      ? ultimaAutoriaAgrupamentoExplicita || ultimaAutoriaExplicita
+      : autoriaAgrupamentoExtraida
     if (autoriaExtraida && !autoriaSubstituidaPorLinha(ref.text)) {
       ultimaAutoriaExplicita = autoriaExtraida
+      ultimaAutoriaAgrupamentoExplicita = autoriaAgrupamentoExtraida || autoriaExtraida
     }
     const ano = extrairAnoReferenciaPrincipal(ref)
     const anoBase = ano.replace(/[a-z]$/i, '')
@@ -1342,6 +1580,9 @@ function anexarProblemasAbnt(list, referencias) {
     grupo.forEach((item, index) => {
       const letraEsperada = String.fromCharCode(97 + index)
       const anoEsperado = `${item.anoBase}${letraEsperada}`
+      item.ref.anoEsperado = anoEsperado
+      item.ref.anoBaseDuplicado = item.anoBase
+      item.ref.anoGrupoCorrecao = chave
       if (item.ano === anoEsperado) return
       if (!avisosPorReferencia[item.ref.index]) avisosPorReferencia[item.ref.index] = []
       avisosPorReferencia[item.ref.index].push(`Há mais de uma obra do mesmo autor em ${item.anoBase}; nesta posição da lista, o ano deve ser ${anoEsperado}.`)
@@ -1365,6 +1606,11 @@ function anexarProblemasAbnt(list, referencias) {
       resultados: [],
       referenceText: ref.text,
       referenceType: audit.tipo,
+      autoriaSubstituta: ref.autoriaSubstituta || '',
+      autoriaGrupoCorrecao: ref.autoriaGrupoCorrecao || '',
+      anoEsperado: ref.anoEsperado || '',
+      anoBaseDuplicado: ref.anoBaseDuplicado || '',
+      anoGrupoCorrecao: ref.anoGrupoCorrecao || '',
       issues: audit.issues,
       element: ref.element,
     })
@@ -1396,6 +1642,7 @@ function conferirReferencias() {
   renderOccurrences()
   renderReferencesPanel(referencias)
   renderSummary(ultimoResultado)
+  if (textSearchInput?.value) executarBuscaTexto(0, { navegar: false })
 }
 
 function renderSummary(resultado) {
@@ -1713,6 +1960,47 @@ function ocorrenciaEhReferenciaLista(item) {
   return !!item?.element?.classList.contains('ref-format') || item?.referenceType === 'referencia-manual'
 }
 
+function chaveCorrecaoGlobal(item) {
+  if (!ocorrenciaEhReferenciaLista(item)) return ''
+  if (item?.anoGrupoCorrecao && item?.anoEsperado) return `ano:${item.anoGrupoCorrecao}`
+  if (
+    item?.autoriaGrupoCorrecao
+    && item?.autoriaSubstituta
+    && autoriaSubstituidaPorLinha(textoAtualOcorrencia(item))
+  ) {
+    return `autoria:${item.autoriaGrupoCorrecao}`
+  }
+  return ''
+}
+
+function tipoCorrecaoGlobal(item) {
+  const chave = chaveCorrecaoGlobal(item)
+  if (chave.startsWith('ano:')) return 'ano'
+  if (chave.startsWith('autoria:')) return 'autoria'
+  return ''
+}
+
+function grupoCorrecaoGlobal(item) {
+  const chave = chaveCorrecaoGlobal(item)
+  if (!chave) return []
+  const vistos = new Set()
+  return occurrences.filter(ocorrencia => {
+    if (!ocorrenciaPodeSerCorrigida(ocorrencia) || !ocorrenciaEhReferenciaLista(ocorrencia)) return false
+    if (chaveCorrecaoGlobal(ocorrencia) !== chave) return false
+    if (!ocorrencia.element?.isConnected || vistos.has(ocorrencia.element)) return false
+    vistos.add(ocorrencia.element)
+    return true
+  })
+}
+
+function labelCorrecaoGlobal(item, quantidade) {
+  const tipo = tipoCorrecaoGlobal(item)
+  const detalhe = tipo === 'ano'
+    ? 'mesmo autor/ano'
+    : 'autoria repetida'
+  return `Corrigir sequência (${quantidade} referências, ${detalhe})`
+}
+
 function ocorrenciaBaseDaCitacao(item) {
   if (!item?.element?.isConnected) return item
   if (item.resultados?.length) return item
@@ -1723,10 +2011,207 @@ function corrigirEspacoIndicadores(text) {
   return String(text || '').replace(/\b([pvn])\.(?=\d)/gi, (match, letra) => `${letra}. `)
 }
 
+function formatarMilharNumero(numero) {
+  return String(numero || '').replace(/\B(?=(\d{3})+(?!\d))/g, '.')
+}
+
+function corrigirMilharPaginas(text) {
+  return String(text || '').replace(
+    /\bp\.\s*(\d{4,})(?![\d.])(?:\s*([-–—])\s*(\d{4,})(?![\d.]))?/gi,
+    (match, inicio, separador, fim) => {
+      const primeiro = formatarMilharNumero(inicio)
+      const segundo = fim ? `${separador || '-'}${formatarMilharNumero(fim)}` : ''
+      return `p. ${primeiro}${segundo}`
+    },
+  )
+}
+
+function corrigirIndicadoresBibliograficos(text) {
+  return corrigirMilharPaginas(corrigirEspacoIndicadores(text))
+}
+
+function sugerirAutoriaSubstituida(item, text) {
+  const autor = normalizarEspacos(item?.autoriaSubstituta || '')
+  if (!autor || !autoriaSubstituidaPorLinha(text)) return text
+  return String(text || '').replace(/^_{3,}\.?\s*/, `${autor}. `)
+}
+
+function aplicarAnoEsperadoEmTrecho(text, anoBase, anoEsperado) {
+  if (!anoBase || !anoEsperado) return text
+  const re = new RegExp(`\\b${anoBase}[a-z]?\\b`, 'gi')
+  return String(text || '').replace(re, anoEsperado)
+}
+
+function sugerirAnoDuplicado(item, text) {
+  const anoEsperado = String(item?.anoEsperado || '')
+  const anoBase = String(item?.anoBaseDuplicado || '').replace(/[a-z]$/i, '')
+  if (!anoEsperado || !anoBase) return text
+
+  const valor = String(text || '')
+  const corteOnline = valor.search(/Dispon\S*\s+em:?|Acesso\s+em:?|https?:\/\//i)
+  const limite = corteOnline >= 0 ? corteOnline : valor.length
+  const antesOnline = valor.slice(0, limite)
+  const depoisOnline = valor.slice(limite)
+
+  if (item?.referenceType === 'legislacao') {
+    return aplicarAnoEsperadoEmTrecho(antesOnline, anoBase, anoEsperado) + depoisOnline
+  }
+
+  const ultimo = indiceUltimoAnoPrincipal(valor)
+  if (!ultimo) return valor
+  const baseEncontrada = ultimo.text.replace(/[a-z]$/i, '')
+  if (baseEncontrada !== anoBase) return valor
+  return valor.slice(0, ultimo.index) + anoEsperado + valor.slice(ultimo.index + ultimo.text.length)
+}
+
+function textNodesDoFragmento(root) {
+  const nodes = []
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let node
+  while ((node = walker.nextNode())) nodes.push(node)
+  return nodes
+}
+
+function textoDoFragmento(root) {
+  return textNodesDoFragmento(root).map(node => node.nodeValue || '').join('')
+}
+
+function substituirIntervaloTextoFragmento(root, start, end, replacement) {
+  const nodes = textNodesDoFragmento(root)
+  let offset = 0
+  let replacementInserted = false
+  nodes.forEach(node => {
+    const value = node.nodeValue || ''
+    const nodeStart = offset
+    const nodeEnd = offset + value.length
+    offset = nodeEnd
+    if (nodeEnd <= start || nodeStart >= end) return
+
+    const localStart = Math.max(0, start - nodeStart)
+    const localEnd = Math.min(value.length, end - nodeStart)
+    const prefix = value.slice(0, localStart)
+    const suffix = value.slice(localEnd)
+    if (!replacementInserted) {
+      node.nodeValue = `${prefix}${replacement}${suffix}`
+      replacementInserted = true
+    } else {
+      node.nodeValue = suffix
+    }
+  })
+}
+
+function substituirIntervalosTextoFragmento(root, ranges) {
+  ranges
+    .filter(range => range && range.end > range.start)
+    .sort((a, b) => b.start - a.start)
+    .forEach(range => substituirIntervaloTextoFragmento(root, range.start, range.end, range.replacement))
+}
+
+function aplicarEspacoIndicadoresHtml(root) {
+  const text = textoDoFragmento(root)
+  const ranges = []
+  text.replace(/\b([pvn])\.(?=\d)/gi, (match, letra, index) => {
+    ranges.push({ start: index, end: index + match.length, replacement: `${letra}. ` })
+    return match
+  })
+  substituirIntervalosTextoFragmento(root, ranges)
+}
+
+function aplicarMilharPaginasHtml(root) {
+  const text = textoDoFragmento(root)
+  const ranges = []
+  text.replace(
+    /\bp\.\s*(\d{4,})(?![\d.])(?:\s*([-–—])\s*(\d{4,})(?![\d.]))?/gi,
+    (match, inicio, separador, fim, index) => {
+      const primeiro = formatarMilharNumero(inicio)
+      const segundo = fim ? `${separador || '-'}${formatarMilharNumero(fim)}` : ''
+      ranges.push({
+        start: index,
+        end: index + match.length,
+        replacement: `p. ${primeiro}${segundo}`,
+      })
+      return match
+    },
+  )
+  substituirIntervalosTextoFragmento(root, ranges)
+}
+
+function aplicarAutoriaSubstituidaHtml(item, root) {
+  const autor = normalizarEspacos(item?.autoriaSubstituta || '')
+  if (!autor) return
+  const text = textoDoFragmento(root)
+  const match = text.match(/^_{3,}\.?\s*/)
+  if (!match) return
+  substituirIntervaloTextoFragmento(root, 0, match[0].length, `${autor}. `)
+}
+
+function aplicarAnoDuplicadoHtml(item, root) {
+  const anoEsperado = String(item?.anoEsperado || '')
+  const anoBase = String(item?.anoBaseDuplicado || '').replace(/[a-z]$/i, '')
+  if (!anoEsperado || !anoBase) return
+
+  const text = textoDoFragmento(root)
+  const corteOnline = text.search(/Dispon\S*\s+em:?|Acesso\s+em:?|https?:\/\//i)
+  const limite = corteOnline >= 0 ? corteOnline : text.length
+
+  if (item?.referenceType === 'legislacao') {
+    const ranges = []
+    const re = new RegExp(`\\b${anoBase}[a-z]?\\b`, 'gi')
+    let match
+    while ((match = re.exec(text.slice(0, limite)))) {
+      ranges.push({ start: match.index, end: match.index + match[0].length, replacement: anoEsperado })
+    }
+    substituirIntervalosTextoFragmento(root, ranges)
+    return
+  }
+
+  const ultimo = indiceUltimoAnoPrincipal(text)
+  if (!ultimo) return
+  const baseEncontrada = ultimo.text.replace(/[a-z]$/i, '')
+  if (baseEncontrada !== anoBase) return
+  substituirIntervaloTextoFragmento(root, ultimo.index, ultimo.index + ultimo.text.length, anoEsperado)
+}
+
+function aplicarSugestoesTextoEmHtml(item, html) {
+  const template = document.createElement('template')
+  template.innerHTML = sanitizarHtmlCorrecao(html)
+  const antes = template.innerHTML
+  aplicarEspacoIndicadoresHtml(template.content)
+  aplicarMilharPaginasHtml(template.content)
+  aplicarAutoriaSubstituidaHtml(item, template.content)
+  aplicarAnoDuplicadoHtml(item, template.content)
+  return template.innerHTML !== antes ? template.innerHTML : ''
+}
+
+function aplicarSugestaoTextoGenericaHtml(html, atual, sugestao) {
+  if (!html || !sugestao || sugestao === atual) return ''
+
+  let prefixo = 0
+  const limitePrefixo = Math.min(atual.length, sugestao.length)
+  while (prefixo < limitePrefixo && atual[prefixo] === sugestao[prefixo]) prefixo += 1
+
+  let sufixo = 0
+  const limiteSufixo = Math.min(atual.length - prefixo, sugestao.length - prefixo)
+  while (
+    sufixo < limiteSufixo
+    && atual[atual.length - 1 - sufixo] === sugestao[sugestao.length - 1 - sufixo]
+  ) {
+    sufixo += 1
+  }
+
+  const start = prefixo
+  const end = atual.length - sufixo
+  const replacement = sugestao.slice(prefixo, sugestao.length - sufixo)
+  const template = document.createElement('template')
+  template.innerHTML = sanitizarHtmlCorrecao(html)
+  substituirIntervaloTextoFragmento(template.content, start, end, replacement)
+  return template.innerHTML
+}
+
 function sugerirCorrecaoOcorrencia(item) {
   const atual = textoAtualOcorrencia(item)
   const base = ocorrenciaBaseDaCitacao(item)
-  let sugestao = corrigirEspacoIndicadores(atual)
+  let sugestao = sugerirAnoDuplicado(item, sugerirAutoriaSubstituida(item, corrigirIndicadoresBibliograficos(atual)))
 
   ;(base.resultados || []).forEach(resultado => {
     const raw = resultado.unit?.authorsRaw || ''
@@ -1823,7 +2308,14 @@ function sugerirCorrecaoHtmlOcorrencia(item) {
 function htmlInicialCorrecao(item, sugestao) {
   const atual = textoAtualOcorrencia(item)
   const sugestaoHtml = sugerirCorrecaoHtmlOcorrencia(item)
-  if (sugestaoHtml) return sugestaoHtml
+  if (item?.element?.isConnected) {
+    const htmlBase = sugestaoHtml || item.element.innerHTML
+    const sugestaoTextoHtml = aplicarSugestoesTextoEmHtml(item, htmlBase)
+    if (sugestaoTextoHtml) return sugestaoTextoHtml
+    if (sugestaoHtml) return sugestaoHtml
+    const sugestaoGenericaHtml = aplicarSugestaoTextoGenericaHtml(htmlBase, atual, sugestao)
+    if (sugestaoGenericaHtml) return sugestaoGenericaHtml
+  }
   if (sugestao && sugestao !== atual) return escHtml(sugestao)
   if (item?.element?.isConnected) return sanitizarHtmlCorrecao(item.element.innerHTML)
   return escHtml(atual)
@@ -1834,10 +2326,268 @@ function htmlAnteriorOcorrencia(item) {
   return escHtml(textoAtualOcorrencia(item))
 }
 
+function blocoDaSelecaoNode(node) {
+  const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement
+  return el?.closest?.('p, li, h1, h2, h3, h4, h5, h6') || null
+}
+
+function htmlDeRange(range) {
+  const container = document.createElement('div')
+  container.appendChild(range.cloneContents())
+  return sanitizarHtmlCorrecao(container.innerHTML)
+}
+
+function selecaoAtualDoEditor(opcoes = {}) {
+  const acao = opcoes.acao || 'registrar'
+  const objeto = opcoes.objeto || 'texto'
+  const selection = window.getSelection()
+  if (!selection || !selection.rangeCount || selection.isCollapsed) {
+    alert(`Selecione um trecho do texto antes de clicar em ${acao}.`)
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
+    alert('A seleção precisa estar dentro do texto importado.')
+    return null
+  }
+
+  const blocoInicio = blocoDaSelecaoNode(range.startContainer)
+  const blocoFim = blocoDaSelecaoNode(range.endContainer)
+  if (!blocoInicio || blocoInicio !== blocoFim) {
+    alert(`Selecione um trecho dentro de um único parágrafo para registrar ${objeto} no Word.`)
+    return null
+  }
+
+  const antes = normalizarEspacos(range.toString())
+  if (!antes) {
+    alert('A seleção não contém texto.')
+    return null
+  }
+
+  return {
+    range: range.cloneRange(),
+    bloco: blocoInicio,
+    paragrafoAntes: textoBloco(blocoInicio),
+    antes,
+    antesHtml: htmlDeRange(range),
+  }
+}
+
+function renderAlteracaoTextoSelecionado(dados) {
+  return `
+    <div class="correction-box manual-replace-box">
+      <div class="correction-before">
+        <strong>Texto anterior</strong>
+        <p>${dados.antesHtml || escHtml(dados.antes)}</p>
+      </div>
+      <label for="correctionText">Texto substituto</label>
+      <div class="correction-toolbar" aria-label="Formatação do texto substituto">
+        <button type="button" data-format-command="bold"><strong>B</strong></button>
+        <button type="button" data-format-command="italic"><em>I</em></button>
+      </div>
+      <div id="correctionText" class="correction-editor" contenteditable="true" role="textbox" aria-multiline="true">${dados.antesHtml || escHtml(dados.antes)}</div>
+      <div class="correction-actions">
+        <button type="button" class="primary" data-action="apply-selection-correction">Aplicar substituição</button>
+        <span>A substituição será registrada para o DOCX corrigido.</span>
+      </div>
+      <p class="correction-feedback" id="correctionFeedback"></p>
+    </div>
+  `
+}
+
+function abrirModalAlterarTextoSelecionado() {
+  if (!importedDocxArrayBuffer) {
+    alert('Importe um DOCX antes de registrar substituições para o Word.')
+    return
+  }
+  const dados = selecaoAtualDoEditor({
+    acao: 'Alterar texto selecionado',
+    objeto: 'a substituição',
+  })
+  if (!dados) return
+  selecaoManualAtual = dados
+  sourceModalOccurrenceId = null
+  sourceModalItem = null
+  if (sourceModalTitle) sourceModalTitle.textContent = 'Alterar texto selecionado'
+  if (sourceModalCitation) sourceModalCitation.textContent = 'Correção manual para o Word'
+  sourceModalBody.innerHTML = renderAlteracaoTextoSelecionado(dados)
+  sourceModal.classList.remove('hidden')
+  setTimeout(() => sourceModalBody?.querySelector('#correctionText')?.focus(), 0)
+}
+
+function registrarCorrecaoManualTexto(dados, depoisHtml) {
+  const htmlFinal = sanitizarHtmlCorrecao(depoisHtml)
+  const depois = textoDeHtmlCorrecao(htmlFinal)
+  correcoesAplicadas.push({
+    id: `correcao-manual-${Date.now()}-${correcoesAplicadas.length + 1}`,
+    tipo: 'texto',
+    antes: dados.antes,
+    depois,
+    antesHtml: dados.antesHtml,
+    depoisHtml: htmlFinal,
+    paragrafoAntes: dados.paragrafoAntes,
+    registradaEm: new Date().toISOString(),
+  })
+  window.refsCorrecoesAplicadas = correcoesAplicadas
+  atualizarEstadoExportacao()
+}
+
+function destacarCorrecaoManualNaPagina(dados, depoisHtml) {
+  if (!dados?.range) return false
+  try {
+    const template = document.createElement('template')
+    template.innerHTML = sanitizarHtmlCorrecao(depoisHtml)
+    dados.range.deleteContents()
+    dados.range.insertNode(template.content.cloneNode(true))
+    editor.normalize()
+    if (textSearchInput?.value) executarBuscaTexto(0, { navegar: false })
+    return true
+  } catch (err) {
+    console.warn('Não foi possível refletir a substituição manual na página.', err)
+    return false
+  }
+}
+
+function aplicarCorrecaoSelecaoManual() {
+  const editorCorrecao = sourceModalBody?.querySelector('#correctionText')
+  const feedback = sourceModalBody?.querySelector('#correctionFeedback')
+  if (!selecaoManualAtual || !editorCorrecao) return
+
+  const depoisHtml = sanitizarHtmlCorrecao(editorCorrecao.innerHTML)
+  const depois = textoDeHtmlCorrecao(depoisHtml)
+  if (!normalizarEspacos(depois)) {
+    if (feedback) feedback.textContent = 'Informe o texto substituto antes de aplicar.'
+    return
+  }
+  if (selecaoManualAtual.antes === depois && selecaoManualAtual.antesHtml === depoisHtml) {
+    if (feedback) feedback.textContent = 'O texto substituto está igual ao trecho selecionado.'
+    return
+  }
+
+  registrarCorrecaoManualTexto(selecaoManualAtual, depoisHtml)
+  destacarCorrecaoManualNaPagina(selecaoManualAtual, depoisHtml)
+  if (feedback) {
+    feedback.textContent = `Substituição registrada para o futuro arquivo corrigido. Total de correções: ${correcoesAplicadas.length}.`
+  }
+  renderSummary(ultimoResultado)
+  selecaoManualAtual = null
+}
+
+function renderComentarioTextoSelecionado(dados) {
+  return `
+    <div class="comment-box manual-comment-box">
+      <div class="correction-before">
+        <strong>Trecho comentado</strong>
+        <p>${dados.antesHtml || escHtml(dados.antes)}</p>
+      </div>
+      <label for="commentAuthor">Comentário no Word</label>
+      <input id="commentAuthor" type="text" value="${escHtml(comentarioAutorPadrao)}" placeholder="Autor do comentário" />
+      <textarea id="commentText" rows="5" placeholder="Escreva o comentário que deve aparecer no Word."></textarea>
+      <div class="comment-actions">
+        <button type="button" class="primary" data-action="apply-selection-comment">Adicionar comentário</button>
+        <span>O comentário será inserido no DOCX corrigido, no trecho selecionado.</span>
+      </div>
+      <p class="comment-feedback" id="commentFeedback"></p>
+    </div>
+  `
+}
+
+function abrirModalComentarTextoSelecionado() {
+  if (!importedDocxArrayBuffer) {
+    alert('Importe um DOCX antes de registrar comentários para o Word.')
+    return
+  }
+  const dados = selecaoAtualDoEditor({
+    acao: 'Comentar texto selecionado',
+    objeto: 'o comentário',
+  })
+  if (!dados) return
+  comentarioManualAtual = dados
+  selecaoManualAtual = null
+  sourceModalOccurrenceId = null
+  sourceModalItem = null
+  if (sourceModalTitle) sourceModalTitle.textContent = 'Comentar texto selecionado'
+  if (sourceModalCitation) sourceModalCitation.textContent = 'Comentário manual para o Word'
+  sourceModalBody.innerHTML = renderComentarioTextoSelecionado(dados)
+  sourceModal.classList.remove('hidden')
+  setTimeout(() => sourceModalBody?.querySelector('#commentText')?.focus(), 0)
+}
+
+function registrarComentarioManualTexto(dados, autor, comentario) {
+  comentariosAplicados.push({
+    id: `comentario-manual-${Date.now()}-${comentariosAplicados.length + 1}`,
+    tipo: 'texto',
+    alvo: dados.antes,
+    alvoHtml: dados.antesHtml,
+    paragrafoAntes: dados.paragrafoAntes,
+    autor,
+    comentario,
+    registradaEm: new Date().toISOString(),
+  })
+  window.refsComentariosAplicados = comentariosAplicados
+  atualizarEstadoExportacao()
+}
+
+function destacarComentarioManualNaPagina(dados) {
+  if (!dados?.range) return false
+  try {
+    const mark = document.createElement('span')
+    mark.className = 'manual-comment-mark'
+    mark.title = 'Comentário registrado para o DOCX corrigido'
+    mark.appendChild(dados.range.extractContents())
+    dados.range.insertNode(mark)
+    editor.normalize()
+    if (textSearchInput?.value) executarBuscaTexto(0, { navegar: false })
+    return true
+  } catch (err) {
+    console.warn('Não foi possível destacar o comentário manual na página.', err)
+    return false
+  }
+}
+
+function aplicarComentarioSelecaoManual() {
+  const authorInput = sourceModalBody?.querySelector('#commentAuthor')
+  const commentInput = sourceModalBody?.querySelector('#commentText')
+  const feedback = sourceModalBody?.querySelector('#commentFeedback')
+  if (!comentarioManualAtual || !authorInput || !commentInput) return
+
+  const autor = normalizarEspacos(authorInput.value || '') || 'ABeNiTa'
+  const comentario = normalizarEspacos(commentInput.value || '')
+  if (!comentario) {
+    if (feedback) feedback.textContent = 'Digite o texto do comentário antes de adicionar.'
+    return
+  }
+
+  comentarioAutorPadrao = autor
+  registrarComentarioManualTexto(comentarioManualAtual, autor, comentario)
+  destacarComentarioManualNaPagina(comentarioManualAtual)
+  if (feedback) {
+    feedback.textContent = `Comentário registrado para exportação. Total de comentários: ${comentariosAplicados.length}.`
+  }
+  comentarioManualAtual = null
+}
+
 function renderCorrecaoOcorrencia(item) {
   if (!ocorrenciaPodeSerCorrigida(item)) return ''
   const sugestao = sugerirCorrecaoOcorrencia(item)
   const htmlInicial = htmlInicialCorrecao(item, sugestao)
+  const grupo = grupoCorrecaoGlobal(item)
+  const opcoesEscopo = grupo.length > 1
+    ? `
+      <fieldset class="correction-scope">
+        <legend>Escopo da correção</legend>
+        <label>
+          <input type="radio" name="correctionScope" value="single" checked />
+          <span>Corrigir somente este caso</span>
+        </label>
+        <label>
+          <input type="radio" name="correctionScope" value="sequence" />
+          <span>${escHtml(labelCorrecaoGlobal(item, grupo.length))}</span>
+        </label>
+      </fieldset>
+    `
+    : ''
   const textoAnterior = ocorrenciaEhReferenciaLista(item)
     ? ''
     : `
@@ -1855,6 +2605,7 @@ function renderCorrecaoOcorrencia(item) {
         <button type="button" data-format-command="italic"><em>I</em></button>
       </div>
       <div id="correctionText" class="correction-editor" contenteditable="true" role="textbox" aria-multiline="true">${htmlInicial}</div>
+      ${opcoesEscopo}
       <div class="correction-actions">
         <button type="button" class="primary" data-action="apply-correction">Aplicar correção</button>
         <span>O ABeNiTa vai conferir novamente essa ocorrência após aplicar.</span>
@@ -1999,6 +2750,11 @@ function criarOcorrenciaManualReferencia(ref) {
     resultados: [],
     referenceText: ref.text,
     referenceType: 'referencia-manual',
+    autoriaSubstituta: ref.autoriaSubstituta || '',
+    autoriaGrupoCorrecao: ref.autoriaGrupoCorrecao || '',
+    anoEsperado: ref.anoEsperado || '',
+    anoBaseDuplicado: ref.anoBaseDuplicado || '',
+    anoGrupoCorrecao: ref.anoGrupoCorrecao || '',
     issues: [],
     element: ref.element,
   }
@@ -2007,6 +2763,8 @@ function criarOcorrenciaManualReferencia(ref) {
 function fecharModalFonte() {
   sourceModalOccurrenceId = null
   sourceModalItem = null
+  selecaoManualAtual = null
+  comentarioManualAtual = null
   sourceModal?.classList.add('hidden')
 }
 
@@ -2044,7 +2802,8 @@ function validarCorrecaoAplicada(originalItem, textoCorrigido, bloco) {
   }
 }
 
-function registrarCorrecaoValidada(item, antes, depois, antesHtml, depoisHtml) {
+function registrarCorrecaoValidada(item, antes, depois, antesHtml, depoisHtml, paragrafoAntes = '') {
+  const bloco = blocoDaOcorrencia(item)
   correcoesAplicadas.push({
     id: `correcao-${Date.now()}-${correcoesAplicadas.length + 1}`,
     tipo: ocorrenciaEhCitacao(item) ? 'citacao' : 'referencia',
@@ -2052,6 +2811,7 @@ function registrarCorrecaoValidada(item, antes, depois, antesHtml, depoisHtml) {
     depois,
     antesHtml,
     depoisHtml,
+    paragrafoAntes: paragrafoAntes || (bloco ? textoBloco(bloco) : ''),
     registradaEm: new Date().toISOString(),
   })
   window.refsCorrecoesAplicadas = correcoesAplicadas
@@ -2061,11 +2821,13 @@ function registrarCorrecaoValidada(item, antes, depois, antesHtml, depoisHtml) {
 function registrarComentarioWord(item, autor, comentario) {
   const alvo = textoAtualOcorrencia(item)
   const alvoHtml = htmlAnteriorOcorrencia(item)
+  const bloco = blocoDaOcorrencia(item)
   comentariosAplicados.push({
     id: `comentario-${Date.now()}-${comentariosAplicados.length + 1}`,
     tipo: ocorrenciaEhCitacao(item) ? 'citacao' : 'referencia',
     alvo,
     alvoHtml,
+    paragrafoAntes: bloco ? textoBloco(bloco) : '',
     autor,
     comentario,
     registradaEm: new Date().toISOString(),
@@ -2110,53 +2872,121 @@ function formatarSelecaoCorrecao(command) {
   document.execCommand(command, false, null)
 }
 
+function textoDeHtmlCorrecao(html) {
+  const template = document.createElement('template')
+  template.innerHTML = sanitizarHtmlCorrecao(html)
+  return normalizarEspacos(template.content.textContent || '')
+}
+
+function htmlSugestaoAutomatica(item) {
+  return htmlInicialCorrecao(item, sugerirCorrecaoOcorrencia(item))
+}
+
+function montarMudancaCorrecao(item, depoisHtml) {
+  if (!item?.element?.isConnected) return null
+  const bloco = blocoDaOcorrencia(item)
+  const antes = textoAtualOcorrencia(item)
+  const antesHtml = sanitizarHtmlCorrecao(item.element.innerHTML)
+  const htmlFinal = sanitizarHtmlCorrecao(depoisHtml)
+  const depois = textoDeHtmlCorrecao(htmlFinal)
+  if (!normalizarEspacos(depois)) return null
+  if (antes === depois && antesHtml === htmlFinal) return null
+  return {
+    item,
+    antes,
+    depois,
+    antesHtml,
+    depoisHtml: htmlFinal,
+    bloco,
+    paragrafoAntes: bloco ? textoBloco(bloco) : '',
+  }
+}
+
+function mudancasCorrecaoSequencia(item, editorHtml) {
+  const escopo = sourceModalBody?.querySelector('input[name="correctionScope"]:checked')?.value || 'single'
+  if (escopo !== 'sequence') {
+    return [montarMudancaCorrecao(item, editorHtml)].filter(Boolean)
+  }
+
+  return grupoCorrecaoGlobal(item).map(ocorrencia => {
+    const html = ocorrencia.id === item.id
+      ? editorHtml
+      : htmlSugestaoAutomatica(ocorrencia)
+    return montarMudancaCorrecao(ocorrencia, html)
+  }).filter(Boolean)
+}
+
 function aplicarCorrecaoOcorrencia() {
   const item = occurrences.find(o => o.id === sourceModalOccurrenceId) || sourceModalItem
   const editorCorrecao = sourceModalBody?.querySelector('#correctionText')
   const feedback = sourceModalBody?.querySelector('#correctionFeedback')
   if (!item || !editorCorrecao || !ocorrenciaPodeSerCorrigida(item)) return
 
-  const antes = textoAtualOcorrencia(item)
-  const antesHtml = sanitizarHtmlCorrecao(item.element.innerHTML)
-  const depois = normalizarEspacos(editorCorrecao.textContent || '')
-  const depoisHtml = sanitizarHtmlCorrecao(editorCorrecao.innerHTML)
-  const bloco = blocoDaOcorrencia(item)
-  if (!normalizarEspacos(depois)) {
+  const editorHtml = sanitizarHtmlCorrecao(editorCorrecao.innerHTML)
+  const textoEditor = textoDeHtmlCorrecao(editorHtml)
+  if (!normalizarEspacos(textoEditor)) {
     if (feedback) feedback.textContent = 'Informe o texto corrigido antes de aplicar.'
     return
   }
-  if (antes === depois && antesHtml === depoisHtml) {
+  const mudancas = mudancasCorrecaoSequencia(item, editorHtml)
+  if (!mudancas.length) {
     if (feedback) feedback.textContent = 'O texto corrigido está igual ao texto atual.'
     return
   }
 
-  item.element.innerHTML = depoisHtml
+  mudancas.forEach(mudanca => {
+    mudanca.item.element.innerHTML = mudanca.depoisHtml
+  })
   conferirReferencias()
 
-  const validacao = validarCorrecaoAplicada(item, depois, bloco)
-  if (validacao.corrigida) {
-    registrarCorrecaoValidada(item, antes, depois, antesHtml, depoisHtml)
+  const validacoes = mudancas.map(mudanca => ({
+    mudanca,
+    validacao: validarCorrecaoAplicada(mudanca.item, mudanca.depois, mudanca.bloco),
+  }))
+  const corrigidas = validacoes.filter(resultado => resultado.validacao.corrigida)
+  corrigidas.forEach(({ mudanca }) => {
+    registrarCorrecaoValidada(
+      mudanca.item,
+      mudanca.antes,
+      mudanca.depois,
+      mudanca.antesHtml,
+      mudanca.depoisHtml,
+      mudanca.paragrafoAntes,
+    )
+  })
+
+  if (corrigidas.length === mudancas.length) {
     renderSummary(ultimoResultado)
-    const novoItem = validacao.relacionados.find(o => o.status === 'ok') || validacao.relacionados[0]
+    const primeiroResultado = validacoes[0]
+    const novoItem = primeiroResultado?.validacao.relacionados.find(o => o.status === 'ok')
+      || primeiroResultado?.validacao.relacionados[0]
     if (novoItem) {
       focusOccurrence(novoItem.id)
       abrirModalFonte(novoItem.id)
       const novoFeedback = sourceModalBody?.querySelector('#correctionFeedback')
-      if (novoFeedback) novoFeedback.textContent = 'Correção validada e registrada para o futuro arquivo corrigido.'
+      if (novoFeedback) {
+        novoFeedback.textContent = mudancas.length > 1
+          ? `Sequência corrigida e registrada para o futuro arquivo corrigido (${mudancas.length} referências).`
+          : 'Correção validada e registrada para o futuro arquivo corrigido.'
+      }
     } else {
       fecharModalFonte()
-      dropZone.textContent = 'Correção validada e registrada para o futuro arquivo corrigido.'
+      dropZone.textContent = mudancas.length > 1
+        ? `Sequência corrigida e registrada para o futuro arquivo corrigido (${mudancas.length} referências).`
+        : 'Correção validada e registrada para o futuro arquivo corrigido.'
     }
     return
   }
 
-  const pendencias = formatarPendenciasCorrecao(validacao.pendencias)
-  const novoItem = validacao.relacionados[0]
+  const pendencias = validacoes.flatMap(resultado => resultado.validacao.pendencias)
+  const pendenciasTexto = formatarPendenciasCorrecao(pendencias)
+  const primeiroPendente = validacoes.find(resultado => !resultado.validacao.corrigida)
+  const novoItem = primeiroPendente?.validacao.relacionados[0]
   if (novoItem) abrirModalFonte(novoItem.id)
   const novoFeedback = sourceModalBody?.querySelector('#correctionFeedback')
   if (novoFeedback) {
-    novoFeedback.textContent = pendencias
-      ? `A correção foi aplicada, mas ainda há pendências:\n${pendencias}`
+    novoFeedback.textContent = pendenciasTexto
+      ? `A correção foi aplicada, mas ainda há pendências:\n${pendenciasTexto}`
       : 'A correção foi aplicada, mas a ocorrência não foi reconhecida como totalmente resolvida.'
   }
 }
@@ -2242,12 +3072,33 @@ docxInput.addEventListener('change', event => {
 })
 
 runBtn.addEventListener('click', conferirReferencias)
+manualReplaceBtn?.addEventListener('click', abrirModalAlterarTextoSelecionado)
+manualCommentBtn?.addEventListener('click', abrirModalComentarTextoSelecionado)
 exportCorrectedBtn?.addEventListener('click', exportarDocxCorrigido)
 clearBtn.addEventListener('click', () => {
   limparCorrecoesAplicadas()
   stripMarks()
 })
 validateUrlsBtn?.addEventListener('click', validarUrlsReferencias)
+textSearchInput?.addEventListener('input', () => executarBuscaTexto(0, { navegar: false }))
+textSearchInput?.addEventListener('keydown', event => {
+  if (event.key !== 'Enter') return
+  event.preventDefault()
+  if (!buscaTextoMatches.length) executarBuscaTexto(0, { navegar: true })
+  navegarBuscaTexto(event.shiftKey ? -1 : 1)
+})
+textSearchCaseBtn?.addEventListener('click', () => {
+  buscaTextoDiferenciarCaixa = !buscaTextoDiferenciarCaixa
+  textSearchCaseBtn.classList.toggle('active', buscaTextoDiferenciarCaixa)
+  textSearchCaseBtn.setAttribute(
+    'aria-pressed',
+    buscaTextoDiferenciarCaixa ? 'true' : 'false',
+  )
+  executarBuscaTexto(Math.max(buscaTextoIndiceAtivo, 0), { navegar: false })
+  textSearchInput?.focus()
+})
+textSearchPrevBtn?.addEventListener('click', () => navegarBuscaTexto(-1))
+textSearchNextBtn?.addEventListener('click', () => navegarBuscaTexto(1))
 
 pasteModeBtn.addEventListener('click', async () => {
   limparCorrecoesAplicadas()
@@ -2258,9 +3109,10 @@ pasteModeBtn.addEventListener('click', async () => {
   const text = await navigator.clipboard.readText().catch(() => '')
   if (text) {
     editor.innerHTML = normalizarParagrafoHtml(text)
+    if (textSearchInput?.value) executarBuscaTexto(0, { navegar: false })
     dropZone.textContent = 'Texto colado. Clique em Conferir referências.'
   } else {
-    alert('Não consegui ler a área de transferência. Cole diretamente na página.')
+    alert('Não consegui ler a área de transferência. Importe um DOCX ou copie o texto novamente e use o botão Colar texto.')
   }
 })
 
@@ -2338,12 +3190,26 @@ sourceModalBody?.addEventListener('click', event => {
     adicionarComentarioOcorrencia()
     return
   }
+  if (event.target.closest('[data-action="apply-selection-correction"]')) {
+    aplicarCorrecaoSelecaoManual()
+    return
+  }
+  if (event.target.closest('[data-action="apply-selection-comment"]')) {
+    aplicarComentarioSelecaoManual()
+    return
+  }
   if (event.target.closest('[data-action="apply-correction"]')) aplicarCorrecaoOcorrencia()
 })
 sourceModal?.addEventListener('click', event => {
   if (event.target.closest('[data-source-close]')) fecharModalFonte()
 })
 document.addEventListener('keydown', event => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+    event.preventDefault()
+    textSearchInput?.focus()
+    textSearchInput?.select()
+    return
+  }
   if (event.key === 'Escape' && !sourceModal?.classList.contains('hidden')) {
     fecharModalFonte()
   }
@@ -2368,3 +3234,5 @@ dropZone.addEventListener('drop', event => {
 renderFilters()
 renderOccurrences()
 atualizarEstadoExportacao()
+textSearchCaseBtn?.setAttribute('aria-pressed', 'false')
+atualizarContadorBuscaTexto()
