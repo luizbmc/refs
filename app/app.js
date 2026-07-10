@@ -24,6 +24,12 @@ const textSearchCaseBtn = document.getElementById('textSearchCaseBtn')
 const textSearchPrevBtn = document.getElementById('textSearchPrevBtn')
 const textSearchNextBtn = document.getElementById('textSearchNextBtn')
 const textSearchCount = document.getElementById('textSearchCount')
+const chapterNav = document.getElementById('chapterNav')
+const chapterSetupModal = document.getElementById('chapterSetupModal')
+const chapterStyleSelect = document.getElementById('chapterStyleSelect')
+const chapterStylePreview = document.getElementById('chapterStylePreview')
+const chapterSetupContinue = document.getElementById('chapterSetupContinue')
+const chapterSetupSingle = document.getElementById('chapterSetupSingle')
 
 let occurrences = []
 let activeFilter = 'todos'
@@ -44,6 +50,10 @@ let buscaTextoIndiceAtivo = -1
 let buscaTextoNavegou = false
 let selecaoManualAtual = null
 let comentarioManualAtual = null
+let docxParagraphMeta = []
+let chapterScopes = []
+let activeChapterIndex = -1
+let pendingChapterSetup = null
 
 const YEAR_RE = /(?:19|20)\d{2}[a-z]?/i
 const YEAR_GLOBAL_RE = /(?:19|20)\d{2}[a-z]?/gi
@@ -139,6 +149,36 @@ function blocosTexto() {
 
 function textoBloco(el) {
   return String(el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim()
+}
+
+function chaveTextoBloco(text) {
+  return normalizarTexto(text).slice(0, 120)
+}
+
+function anexarMetadadosParagrafos(paragraphs) {
+  docxParagraphMeta = Array.isArray(paragraphs) ? paragraphs : []
+  const metas = docxParagraphMeta
+    .map((meta, index) => ({ ...meta, index, key: chaveTextoBloco(meta.text) }))
+    .filter(meta => meta.key)
+  const usados = new Set()
+  blocosTexto().forEach((block, blockIndex) => {
+    block.dataset.blockIndex = String(blockIndex)
+    const key = chaveTextoBloco(textoBloco(block))
+    let foundIndex = -1
+    for (let i = 0; i < metas.length; i += 1) {
+      if (usados.has(i)) continue
+      if (metas[i].key === key || metas[i].key.includes(key) || key.includes(metas[i].key)) {
+        foundIndex = i
+        break
+      }
+    }
+    if (foundIndex < 0) return
+    usados.add(foundIndex)
+    const meta = metas[foundIndex]
+    block.dataset.docxParagraphIndex = String(meta.index)
+    block.dataset.styleId = meta.styleId || ''
+    block.dataset.styleName = meta.styleName || ''
+  })
 }
 
 function limparMarcasBuscaTexto() {
@@ -323,6 +363,13 @@ function encontrarSecaoReferencias() {
     referenceBlocks: headingIndex >= 0 ? blocks.slice(headingIndex + 1) : [],
     heading: headingIndex >= 0 ? blocks[headingIndex] : null,
   }
+}
+
+function encontrarSecoesReferenciasElegiveis() {
+  const blocks = blocosTexto()
+  return blocks
+    .map((el, index) => ({ el, index }))
+    .filter(item => pareceTituloSecaoReferencias(item.el) && proximoBlocoPareceReferencia(blocks, item.index))
 }
 
 function proximoBlocoPareceReferencia(blocks, headingIndex) {
@@ -1627,7 +1674,178 @@ function prepararReferenciasClicaveis(referencias) {
   })
 }
 
+function estiloKeyDoBloco(block) {
+  return block?.dataset?.styleId || block?.dataset?.styleName || ''
+}
+
+function estiloLabelDoBloco(block) {
+  const name = block?.dataset?.styleName || ''
+  const id = block?.dataset?.styleId || ''
+  return name || id || 'Sem estilo'
+}
+
+function estilosDisponiveisParaCapitulos() {
+  const grupos = new Map()
+  blocosTexto().forEach(block => {
+    const key = estiloKeyDoBloco(block)
+    if (!key) return
+    const styleName = (block?.dataset?.styleName || '').trim()
+    if (!styleName.startsWith('_TITULOS')) return
+    if (!grupos.has(key)) {
+      grupos.set(key, {
+        key,
+        label: estiloLabelDoBloco(block),
+        blocks: [],
+      })
+    }
+    grupos.get(key).blocks.push(block)
+  })
+  return Array.from(grupos.values())
+    .filter(grupo => grupo.blocks.length > 0)
+    .sort((a, b) => b.blocks.length - a.blocks.length || a.label.localeCompare(b.label))
+}
+
+function referenciasDentroDoIntervalo(refHeadings, start, end) {
+  return refHeadings.filter(item => item.index > start && item.index < end)
+}
+
+function montarEscoposPorEstilo(styleKey) {
+  const blocks = blocosTexto()
+  const titleIndexes = blocks
+    .map((block, index) => ({ block, index }))
+    .filter(item => estiloKeyDoBloco(item.block) === styleKey)
+  const refHeadings = encontrarSecoesReferenciasElegiveis()
+  const scopes = []
+
+  titleIndexes.forEach((title, i) => {
+    const nextTitleIndex = titleIndexes[i + 1]?.index ?? blocks.length
+    const refs = referenciasDentroDoIntervalo(refHeadings, title.index, nextTitleIndex)
+    if (!refs.length) return
+    const refHeading = refs[refs.length - 1]
+    scopes.push({
+      id: `chapter-${scopes.length}`,
+      title: textoBloco(title.block) || `Capítulo ${scopes.length + 1}`,
+      titleBlock: title.block,
+      startIndex: title.index,
+      endIndex: nextTitleIndex,
+      secao: {
+        blocks,
+        headingIndex: refHeading.index,
+        bodyBlocks: blocks.slice(title.index, refHeading.index),
+        referenceBlocks: blocks.slice(refHeading.index + 1, nextTitleIndex),
+        heading: refHeading.el,
+      },
+    })
+  })
+  return scopes
+}
+
+function atualizarPreviewEstiloCapitulo() {
+  if (!chapterStyleSelect || !chapterStylePreview || !pendingChapterSetup) return
+  const styleKey = chapterStyleSelect.value
+  const grupo = pendingChapterSetup.styles.find(item => item.key === styleKey)
+  const scopes = montarEscoposPorEstilo(styleKey)
+  const titulos = (grupo?.blocks || []).map(block => textoBloco(block)).filter(Boolean)
+  chapterStylePreview.innerHTML = `
+    <p><strong>${scopes.length}</strong> capítulo(s) com lista de referências detectada(s). <strong>${titulos.length}</strong> título(s) usam esse estilo.</p>
+    <ol>${titulos.slice(0, 40).map(titulo => `<li>${escHtml(titulo)}</li>`).join('')}</ol>
+    ${titulos.length > 40 ? '<p>Lista abreviada para visualização.</p>' : ''}
+  `
+}
+
+function abrirPainelEscolhaCapitulos(styles) {
+  pendingChapterSetup = { styles }
+  chapterStyleSelect.innerHTML = styles.map(style => (
+    `<option value="${escHtml(style.key)}">${escHtml(style.label)} — ${style.blocks.length} parágrafo(s)</option>`
+  )).join('')
+  atualizarPreviewEstiloCapitulo()
+  chapterSetupModal?.classList.remove('hidden')
+}
+
+function fecharPainelEscolhaCapitulos() {
+  pendingChapterSetup = null
+  chapterSetupModal?.classList.add('hidden')
+}
+
+function renderChapterNav() {
+  if (!chapterNav) return
+  if (!chapterScopes.length) {
+    chapterNav.classList.add('hidden')
+    chapterNav.innerHTML = ''
+    return
+  }
+  chapterNav.classList.remove('hidden')
+  chapterNav.innerHTML = chapterScopes.map((scope, index) => `
+    <button type="button" class="${index === activeChapterIndex ? 'active' : ''}" data-chapter-index="${index}">
+      <strong>${String(index + 1).padStart(2, '0')}</strong>
+      <span>${escHtml(scope.title)}</span>
+    </button>
+  `).join('')
+}
+
+function aplicarEstiloVisualTitulosCapitulo() {
+  editor.querySelectorAll('.chapter-title-block').forEach(el => el.classList.remove('chapter-title-block'))
+  chapterScopes.forEach(scope => {
+    scope.titleBlock?.classList.add('chapter-title-block')
+  })
+}
+
+function conferirEscopo(secao, chapterLabel) {
+  stripMarks()
+  if (secao.heading) secao.heading.classList.add('refs-heading')
+
+  const referencias = montarReferencias(secao.referenceBlocks)
+  const citacoes = coletarCitacoes(secao.bodyBlocks, referencias)
+  occurrences = anexarProblemasAbnt(aplicarMarcacoes(citacoes, referencias), referencias)
+  prepararReferenciasClicaveis(referencias)
+  ultimoResultado = { secao, referencias, citacoes, occurrences, chapterLabel }
+  renderFilters()
+  renderOccurrences()
+  renderReferencesPanel(referencias)
+  renderSummary(ultimoResultado)
+  renderChapterNav()
+  aplicarEstiloVisualTitulosCapitulo()
+  if (textSearchInput?.value) executarBuscaTexto(0, { navegar: false })
+}
+
+function ativarCapitulo(index) {
+  if (!chapterScopes[index]) return
+  activeChapterIndex = index
+  const scope = chapterScopes[index]
+  conferirEscopo(scope.secao, scope.title)
+  scope.titleBlock?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function usarDocumentoUnico() {
+  editor.querySelectorAll('.chapter-title-block').forEach(el => el.classList.remove('chapter-title-block'))
+  chapterScopes = []
+  activeChapterIndex = -1
+  renderChapterNav()
+  fecharPainelEscolhaCapitulos()
+  conferirReferencias()
+}
+
+function continuarComCapitulos() {
+  const styleKey = chapterStyleSelect?.value || ''
+  const scopes = montarEscoposPorEstilo(styleKey)
+  if (!scopes.length) {
+    if (chapterStylePreview) {
+      chapterStylePreview.innerHTML += '<p class="chapter-warning">Nenhum capítulo válido foi encontrado com esse estilo.</p>'
+    }
+    return
+  }
+  chapterScopes = scopes
+  activeChapterIndex = 0
+  fecharPainelEscolhaCapitulos()
+  ativarCapitulo(0)
+}
+
 function conferirReferencias() {
+  if (chapterScopes.length && activeChapterIndex >= 0) {
+    const scope = chapterScopes[activeChapterIndex]
+    conferirEscopo(scope.secao, scope.title)
+    return
+  }
   stripMarks()
   normalizarQuebrasSoltas()
   const secao = encontrarSecaoReferencias()
@@ -1662,8 +1880,9 @@ function renderSummary(resultado) {
   const citacoes = resultado.citacoes.length
   const heading = resultado.secao.heading ? 'seção de referências encontrada' : 'seção de referências não encontrada'
   const correcoes = correcoesAplicadas.length
+  const chapter = resultado.chapterLabel ? ` em <strong>${escHtml(resultado.chapterLabel)}</strong>` : ''
   summaryEl.innerHTML = `
-    <strong>${total}</strong> ocorrência(s): <strong>${citacoes}</strong> citação(ões) no texto, <strong>${refs}</strong> referência(s), ${heading}.<br>
+    <strong>${total}</strong> ocorrência(s)${chapter}: <strong>${citacoes}</strong> citação(ões) no texto, <strong>${refs}</strong> referência(s), ${heading}.<br>
     Encontradas: <strong>${ok}</strong> · Parciais: <strong>${partial}</strong> · Ano divergente: <strong>${warning}</strong> · Autor ausente: <strong>${authorless}</strong> · Ausentes: <strong>${missing}</strong> · Checagem ABNT: <strong>${format}</strong>${correcoes ? ` · Correções validadas: <strong>${correcoes}</strong>` : ''}
   `
   countBadge.textContent = String(total)
@@ -2999,11 +3218,23 @@ async function importDocx(file) {
   if (!file) return
   limparCorrecoesAplicadas()
   stripMarks()
+  chapterScopes = []
+  activeChapterIndex = -1
+  editor.querySelectorAll('.chapter-title-block').forEach(el => el.classList.remove('chapter-title-block'))
+  renderChapterNav()
   dropZone.textContent = `Importando ${file.name}...`
   const arrayBuffer = await file.arrayBuffer()
   importedDocxArrayBuffer = arrayBuffer.slice(0)
   importedDocxName = file.name
   atualizarEstadoExportacao()
+  let estruturaDocx = null
+  if (window.refsBridge && typeof window.refsBridge.extrairEstruturaDocx === 'function') {
+    try {
+      estruturaDocx = await window.refsBridge.extrairEstruturaDocx({ arrayBuffer: arrayBuffer.slice(0) })
+    } catch (err) {
+      console.warn('Não foi possível extrair estilos do DOCX.', err)
+    }
+  }
   const result = await window.mammoth.convertToHtml({ arrayBuffer }, {
     convertImage: () => Promise.resolve([]),
     styleMap: [
@@ -3017,6 +3248,16 @@ async function importDocx(file) {
   })
   editor.innerHTML = result.value || '<p></p>'
   ocultarImagensDoEditor()
+  anexarMetadadosParagrafos(estruturaDocx?.paragraphs || [])
+  const refsElegiveis = encontrarSecoesReferenciasElegiveis()
+  if (refsElegiveis.length > 1 && docxParagraphMeta.length) {
+    const styles = estilosDisponiveisParaCapitulos()
+    if (styles.length) {
+      dropZone.innerHTML = `<strong>${escHtml(file.name)}</strong> importado. Escolha o estilo dos títulos principais para dividir o documento.`
+      abrirPainelEscolhaCapitulos(styles)
+      return
+    }
+  }
   conferirReferencias()
   dropZone.innerHTML = `<strong>${escHtml(file.name)}</strong> importado. Conferencia executada automaticamente.`
 }
@@ -3080,6 +3321,14 @@ clearBtn.addEventListener('click', () => {
   stripMarks()
 })
 validateUrlsBtn?.addEventListener('click', validarUrlsReferencias)
+chapterStyleSelect?.addEventListener('change', atualizarPreviewEstiloCapitulo)
+chapterSetupContinue?.addEventListener('click', continuarComCapitulos)
+chapterSetupSingle?.addEventListener('click', usarDocumentoUnico)
+chapterNav?.addEventListener('click', event => {
+  const btn = event.target.closest('button[data-chapter-index]')
+  if (!btn) return
+  ativarCapitulo(Number(btn.dataset.chapterIndex))
+})
 textSearchInput?.addEventListener('input', () => executarBuscaTexto(0, { navegar: false }))
 textSearchInput?.addEventListener('keydown', event => {
   if (event.key !== 'Enter') return

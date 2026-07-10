@@ -137,6 +137,63 @@ function decodeXml(text) {
     .replace(/&amp;/g, '&');
 }
 
+function textoParagrafoComTabs(paragraphXml) {
+  const partes = [];
+  String(paragraphXml || '').replace(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|<w:tab\s*\/>/g, (full, text) => {
+    partes.push(/^<w:tab/i.test(full) ? '\t' : decodeXml(text));
+    return '';
+  });
+  return partes.join('').replace(/\s+/g, ' ').trim();
+}
+
+function getStyleIdParagrafo(paragraphXml) {
+  const match = String(paragraphXml || '').match(/<w:pStyle\b[^>]*\bw:val="([^"]+)"/i);
+  return match ? decodeXml(match[1]) : '';
+}
+
+function mapaEstilosParagrafo(stylesXml) {
+  const mapa = {};
+  String(stylesXml || '').replace(/<w:style\b([^>]*)>([\s\S]*?)<\/w:style>/g, (full, attrs, inner) => {
+    if (!/\bw:type="paragraph"/i.test(attrs)) return '';
+    const id = (attrs.match(/\bw:styleId="([^"]+)"/i) || [])[1] || '';
+    const name = (inner.match(/<w:name\b[^>]*\bw:val="([^"]+)"/i) || [])[1] || '';
+    if (id) mapa[decodeXml(id)] = decodeXml(name || id);
+    return '';
+  });
+  return mapa;
+}
+
+async function extrairEstruturaDocx(arrayBuffer) {
+  const buffer = Buffer.from(arrayBuffer);
+  const zip = await JSZip.loadAsync(buffer);
+  const documentFile = zip.file('word/document.xml');
+  if (!documentFile) return { paragraphs: [], styles: [] };
+
+  const documentXml = await documentFile.async('string');
+  const stylesXml = zip.file('word/styles.xml')
+    ? await zip.file('word/styles.xml').async('string')
+    : '';
+  const estilos = mapaEstilosParagrafo(stylesXml);
+  const paragraphs = [];
+  String(documentXml || '').replace(/<w:p\b[\s\S]*?<\/w:p>/g, (pXml) => {
+    const text = textoParagrafoComTabs(pXml);
+    if (!text) return '';
+    const styleId = getStyleIdParagrafo(pXml);
+    paragraphs.push({
+      text,
+      styleId,
+      styleName: estilos[styleId] || styleId || 'Normal'
+    });
+    return '';
+  });
+  const styles = Array.from(new Map(
+    paragraphs
+      .filter(p => p.styleName)
+      .map(p => [p.styleId || p.styleName, { styleId: p.styleId, styleName: p.styleName }])
+  ).values());
+  return { paragraphs, styles };
+}
+
 function encodeXml(text) {
   return String(text || '')
     .replace(/&/g, '&amp;')
@@ -561,6 +618,16 @@ ipcMain.handle('refs:validarUrls', async (event, urls) => {
     resultados.push(await validarUrl(lista[i]));
   }
   return resultados;
+});
+
+ipcMain.handle('refs:extrairEstruturaDocx', async (event, payload) => {
+  try {
+    if (!payload?.arrayBuffer) return { ok: false, erro: 'O DOCX não está carregado.' };
+    const estrutura = await extrairEstruturaDocx(payload.arrayBuffer);
+    return { ok: true, ...estrutura };
+  } catch (err) {
+    return { ok: false, erro: err?.message || String(err) };
+  }
 });
 
 ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {

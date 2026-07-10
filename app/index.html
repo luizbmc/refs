@@ -52,6 +52,7 @@
     </aside>
 
     <section class="workspace">
+      <nav id="chapterNav" class="chapter-nav hidden" aria-label="Capítulos do documento"></nav>
       <div id="dropZone" class="drop-zone">
         <strong>Importe um DOCX</strong> ou use o botão Colar texto para começar.
       </div>
@@ -73,6 +74,29 @@
       </div>
     </aside>
   </main>
+
+  <div id="chapterSetupModal" class="source-modal hidden" role="dialog" aria-modal="true" aria-labelledby="chapterSetupTitle">
+    <div class="source-modal-backdrop"></div>
+    <section class="source-modal-card chapter-setup-card">
+      <header class="source-modal-head">
+        <div>
+          <h2 id="chapterSetupTitle">Dividir por capítulos</h2>
+          <p>Foram encontradas várias listas de referências. Escolha o estilo usado nos títulos principais.</p>
+        </div>
+      </header>
+      <div class="source-modal-body">
+        <label class="chapter-style-field">
+          <span>Estilo dos títulos principais</span>
+          <select id="chapterStyleSelect"></select>
+        </label>
+        <div id="chapterStylePreview" class="chapter-style-preview"></div>
+        <div class="chapter-setup-actions">
+          <button id="chapterSetupContinue" type="button" class="primary">Continuar</button>
+          <button id="chapterSetupSingle" type="button">Analisar como documento único</button>
+        </div>
+      </div>
+    </section>
+  </div>
 
   <div id="sourceModal" class="source-modal hidden" role="dialog" aria-modal="true" aria-labelledby="sourceModalTitle">
     <div class="source-modal-backdrop" data-source-close></div>
