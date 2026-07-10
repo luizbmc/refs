@@ -318,6 +318,27 @@ function criarRun(text, baseRPr, segment, charStyles) {
   return `<w:r>${props}<w:t${preserve}>${encodeXml(text)}</w:t></w:r>`;
 }
 
+function criarRunDeletado(text, baseRPr) {
+  if (!text) return '';
+  const preserve = /^\s|\s$/.test(text) ? ' xml:space="preserve"' : '';
+  const props = baseRPr || '';
+  return `<w:r>${props}<w:delText${preserve}>${encodeXml(text)}</w:delText></w:r>`;
+}
+
+function criarTrackedChangeAttrs(author, date, id) {
+  return `w:id="${id}" w:author="${encodeXmlAttr(author || 'ABeNiTa')}" w:date="${encodeXmlAttr(date)}"`;
+}
+
+function wrapInsertion(runsXml, revision) {
+  if (!runsXml) return '';
+  return `<w:ins ${criarTrackedChangeAttrs(revision.author, revision.date, revision.insertId)}>${runsXml}</w:ins>`;
+}
+
+function wrapDeletion(runsXml, revision) {
+  if (!runsXml) return '';
+  return `<w:del ${criarTrackedChangeAttrs(revision.author, revision.date, revision.deleteId)}>${runsXml}</w:del>`;
+}
+
 function segmentosHtml(html) {
   const segments = [];
   let bold = false;
@@ -371,7 +392,7 @@ function textoParagrafoXml(paragraphXml) {
   return extrairRuns(paragraphXml).map(run => run.text).join('');
 }
 
-function substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles) {
+function substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles, revision) {
   const runs = extrairRuns(paragraphXml);
   const paragraphText = runs.map(run => run.text).join('');
   const start = encontrarIndiceNormalizado(paragraphText, antes);
@@ -402,9 +423,20 @@ function substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles) {
 
     if (prefix) pieces.push(criarRun(prefix, run.rPr, null, charStyles));
     if (!inserted) {
-      replacementSegments.forEach(segment => {
-        pieces.push(criarRun(segment.text, baseRPr, segment, charStyles));
-      });
+      const deletedRuns = overlapRuns.map(overlapRun => {
+        const from = Math.max(start, overlapRun.start) - overlapRun.start;
+        const to = Math.min(end, overlapRun.end) - overlapRun.start;
+        return criarRunDeletado(overlapRun.text.slice(from, to), overlapRun.rPr);
+      }).join('');
+      const insertedRuns = replacementSegments.map(segment => (
+        criarRun(segment.text, baseRPr, segment, charStyles)
+      )).join('');
+      if (revision) {
+        pieces.push(wrapDeletion(deletedRuns, revision));
+        pieces.push(wrapInsertion(insertedRuns, revision));
+      } else {
+        pieces.push(insertedRuns);
+      }
       inserted = true;
     }
     if (suffix) pieces.push(criarRun(suffix, run.rPr, null, charStyles));
@@ -413,6 +445,31 @@ function substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles) {
 
   pieces.push(paragraphXml.slice(cursor));
   return pieces.join('');
+}
+
+function maxRevisionId(xml) {
+  let max = 0;
+  String(xml || '').replace(/<w:(?:ins|del)\b[^>]*\bw:id="(\d+)"/g, (m, id) => {
+    max = Math.max(max, Number(id));
+    return m;
+  });
+  return max;
+}
+
+function garantirTrackRevisionsSettings(settingsXml) {
+  let xml = String(settingsXml || '').trim();
+  if (!xml) {
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+      '<w:trackRevisions/></w:settings>';
+  }
+  if (/<w:trackRevisions\b/i.test(xml)) {
+    return xml.replace(/<w:trackRevisions\b[^>]*(?:\/>|>[\s\S]*?<\/w:trackRevisions>)/i, '<w:trackRevisions/>');
+  }
+  if (/<w:settings\b[^>]*>/i.test(xml)) {
+    return xml.replace(/(<w:settings\b[^>]*>)/i, '$1<w:trackRevisions/>');
+  }
+  return xml;
 }
 
 function criarRunComentarioReference(commentId) {
@@ -477,6 +534,8 @@ function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles) {
   const aplicadas = [];
   const ignoradas = [];
   let xml = documentXml;
+  let revisionId = maxRevisionId(xml) + 1;
+  const revisionDate = new Date().toISOString();
 
   (correcoes || []).forEach((correcao, index) => {
     const antes = correcao.antes || '';
@@ -497,8 +556,15 @@ function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles) {
         if (exigirParagrafo && paragrafoNormalizado && !textoNormalizado.includes(paragrafoNormalizado)) {
           return paragraphXml;
         }
-        const novo = substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles);
+        const revision = {
+          author: correcao.autor || 'ABeNiTa',
+          date: revisionDate,
+          deleteId: revisionId,
+          insertId: revisionId + 1
+        };
+        const novo = substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles, revision);
         if (!novo || novo === paragraphXml) return paragraphXml;
+        revisionId += 2;
         substituiuNestaPassagem = true;
         return novo;
       });
@@ -685,6 +751,13 @@ ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
   }
 
   zip.file('word/document.xml', documentXmlFinal);
+  if (resultado.aplicadas.length) {
+    const settingsPath = 'word/settings.xml';
+    const settingsXml = zip.file(settingsPath)
+      ? await zip.file(settingsPath).async('string')
+      : '';
+    zip.file(settingsPath, garantirTrackRevisionsSettings(settingsXml));
+  }
   const output = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
   await fs.promises.writeFile(filePath, output);
   return {
