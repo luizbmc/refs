@@ -22,6 +22,7 @@
       </label>
       <button id="pasteModeBtn" type="button">Colar texto</button>
       <button id="runBtn" type="button" class="primary">Conferir referências</button>
+      <button id="abntHelpBtn" type="button">Ajuda ABNT</button>
       <button id="manualReplaceBtn" type="button">Alterar texto selecionado</button>
       <button id="manualCommentBtn" type="button">Comentar texto selecionado</button>
       <button id="exportCorrectedBtn" type="button" disabled>Baixar DOCX corrigido</button>
@@ -109,6 +110,30 @@
         <button id="sourceModalClose" type="button" class="source-modal-close" aria-label="Fechar">×</button>
       </header>
       <div id="sourceModalBody" class="source-modal-body"></div>
+    </section>
+  </div>
+
+  <input id="abntHelpImportInput" type="file" accept=".json,application/json" hidden />
+
+  <div id="exportAuthorModal" class="source-modal export-author-modal hidden" role="dialog" aria-modal="true" aria-labelledby="exportAuthorTitle">
+    <div class="source-modal-backdrop" data-export-author-cancel></div>
+    <section class="source-modal-card export-author-card">
+      <header class="source-modal-head">
+        <div>
+          <h2 id="exportAuthorTitle">Autoria das alterações</h2>
+          <p>Esse nome aparecerá no controle de alterações do Word.</p>
+        </div>
+      </header>
+      <div class="source-modal-body">
+        <label class="export-author-field">
+          <span>Nome do revisor</span>
+          <input id="exportAuthorInput" type="text" autocomplete="name" placeholder="Ex.: Luiz" />
+        </label>
+        <div class="export-author-actions">
+          <button id="exportAuthorCancel" type="button">Cancelar</button>
+          <button id="exportAuthorConfirm" type="button" class="primary">Baixar DOCX</button>
+        </div>
+      </div>
     </section>
   </div>
 

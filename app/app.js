@@ -1,6 +1,7 @@
 ﻿const editor = document.getElementById('editor')
 const docxInput = document.getElementById('docxInput')
 const runBtn = document.getElementById('runBtn')
+const abntHelpBtn = document.getElementById('abntHelpBtn')
 const clearBtn = document.getElementById('clearBtn')
 const pasteModeBtn = document.getElementById('pasteModeBtn')
 const manualReplaceBtn = document.getElementById('manualReplaceBtn')
@@ -30,6 +31,11 @@ const chapterStyleSelect = document.getElementById('chapterStyleSelect')
 const chapterStylePreview = document.getElementById('chapterStylePreview')
 const chapterSetupContinue = document.getElementById('chapterSetupContinue')
 const chapterSetupSingle = document.getElementById('chapterSetupSingle')
+const abntHelpImportInput = document.getElementById('abntHelpImportInput')
+const exportAuthorModal = document.getElementById('exportAuthorModal')
+const exportAuthorInput = document.getElementById('exportAuthorInput')
+const exportAuthorCancel = document.getElementById('exportAuthorCancel')
+const exportAuthorConfirm = document.getElementById('exportAuthorConfirm')
 
 let occurrences = []
 let activeFilter = 'todos'
@@ -41,6 +47,7 @@ let sourceModalOccurrenceId = null
 let sourceModalItem = null
 let correcoesAplicadas = []
 let comentariosAplicados = []
+let normalizacoesAutomaticasDocx = 0
 let comentarioAutorPadrao = ''
 let importedDocxArrayBuffer = null
 let importedDocxName = ''
@@ -54,6 +61,8 @@ let docxParagraphMeta = []
 let chapterScopes = []
 let activeChapterIndex = -1
 let pendingChapterSetup = null
+let ajudaAbntModoEdicao = false
+let ajudaAbntTipoAtivo = ''
 
 const YEAR_RE = /(?:19|20)\d{2}[a-z]?/i
 const YEAR_GLOBAL_RE = /(?:19|20)\d{2}[a-z]?/gi
@@ -74,6 +83,147 @@ const ABNT_TIPOS = {
   desconhecido: 'Tipo não classificado',
 }
 
+const AJUDA_ABNT_STORAGE_KEY = 'abenita_ajuda_abnt_catalogo_v1'
+const EXPORT_AUTHOR_STORAGE_KEY = 'abenita_export_author'
+
+const AJUDA_ABNT_PADRAO = [
+  {
+    id: 'legislacao',
+    titulo: 'Legislação',
+    descricao: 'Atos normativos, constituições, leis, decretos e normas jurídicas em geral.',
+    estrutura: 'JURISDIÇÃO. <b>Epígrafe</b>. Ementa (transcrita conforme a publicação). Dados da publicação (se houver). Disponível em: [endereço eletrônico]. Acesso em: [dia mês. ano].',
+    exemplos: [
+      'BRASIL. <b>Lei nº 10.406, de 10 de janeiro de 2002</b>. Institui o Código Civil. Diário Oficial da União: seção 1, Brasília, DF, p. 1-74, 11 jan. 2002. Disponível em: planalto.gov.br. Acesso em: 11 jul. 2026.',
+      'BRASIL. <b>Decreto nº 11.034, de 5 de abril de 2022</b>. Regulamenta a Lei nº 8.078, para dispor sobre o Serviço de Atendimento ao Consumidor (SAC). Disponível em: https://www.planalto.gov.br/ccivil_03/_ato2019-2022/2022/decreto/d11034.htm. Acesso em: 11 jul. 2026.',
+      'BRASIL. [Constituição (1988)]. <b>Constituição da República Federativa do Brasil de 1988</b>. Brasília, DF: Presidência da República, [2016]. Disponível em: http://www.planalto.gov.br/ccivil_03/constituicao/constituicao.htm. Acesso em: 11 jul. 2026.',
+    ],
+    citacoes: [
+      'Citação <b>indireta</b>: (BRASIL, 1988).',
+      'Citação <b>direta</b> (transcrição exata de um artigo): inclua o artigo ou inciso específico na citação (BRASIL, 1988, art. 5º, inc. II).',
+    ],
+  },
+  {
+    id: 'livro',
+    titulo: 'Livro/monografia',
+    descricao: 'Obra completa publicada como livro, e-book ou monografia no todo.',
+    estrutura: 'AUTOR. <b>Título</b>: subtítulo. Edição. Local: Editora, ano.',
+    exemplos: [
+      'BAGNO, Marcos. <b>Pesquisa na escola</b>: o que é, como se faz. 24. ed. São Paulo: Loyola, 2010.',
+      'SUNDFELD, Carlos Ari. <b>Direito Administrativo para Céticos</b>. 2. ed. São Paulo: Malheiros, 2014.',
+      'CANOTILHO, José Joaquim Gomes. <b>Direito constitucional e teoria da Constituição</b>. 7. ed. Coimbra: Almedina, 2003.',
+    ],
+    citacoes: [
+      'Citação indireta: (Bagno, 2010).',
+      'Citação direta: (Bagno, 2010, p. 23).',
+    ],
+  },
+  {
+    id: 'capitulo',
+    titulo: 'Parte de monografia',
+    descricao: 'Capítulo, seção ou parte de livro escrito por autor próprio dentro de obra organizada.',
+    estrutura: 'AUTOR DA PARTE. Título da parte. In: AUTOR/ORGANIZADOR DA OBRA. <b>Título da obra</b>: subtítulo. Local: Editora, ano. p. inicial-final.',
+    exemplos: [
+      'ELLERY, Roberto et al. Controle sintético como ferramenta para avaliação de políticas públicas. In: SACHSIDA, Adolfo (org.). <b>Políticas públicas</b>: avaliando mais de meio trilhão de reais em gastos públicos. Brasília: Ipea, 2018. p. 375-395.',
+      'GEBARA, Ivone. Desiguais e iguais a quem? In: GEBARA, Ivone. <b>Vulnerabilidade, Justiça e Feminismos</b>: antologia de textos. São Bernardo do Campo: Nhanduti, 2010. p. 111-119.',
+      'BENJAMIN, Walter. A obra de arte na época de suas técnicas de reprodução. In: <b>Os pensadores XLVIII</b>: textos escolhidos. São Paulo: Abril Cultural, 1975.',
+    ],
+    citacoes: [
+      'Citação indireta: (Ellery et al., 2018).',
+      'Citação direta: (Gebara, 2010, p. 114).',
+    ],
+  },
+  {
+    id: 'artigoPeriodico',
+    titulo: 'Artigo de periódico',
+    descricao: 'Artigo publicado em revista científica, periódico acadêmico ou caderno especializado.',
+    estrutura: 'AUTOR. Título do artigo. <b>Título do periódico</b>, local, volume, número, páginas, data.',
+    exemplos: [
+      'SILVA, Antônio Augusto Moura da. Intervenções precoces a redução de vulnerabilidades em melhora do desenvolvimento infantil. <b>Cadernos de Saúde Pública</b>, Rio de Janeiro, v. 35, n. 3, p. 1-3, mar. 2019.',
+      'GIL, Carlos Gómez. Objetivos de Desarrollo Sostenible (ODS): una revisión crítica. <b>Papeles de relaciones ecosociales y cambio global</b>, Madri, n. 140, p. 107-118, 2018.',
+      'FRANÇA, Vladimir da Rocha. Eficiência administrativa na Constituição Federal. <b>Revista de Direito Administrativo</b>, Rio de Janeiro, v. 220, p. 165-177, jul. 2000.',
+    ],
+    citacoes: [
+      'Citação indireta: Silva (2019) observa que...',
+      'Citação direta: (França, 2000, p. 170).',
+    ],
+  },
+  {
+    id: 'jornal',
+    titulo: 'Artigo de jornal',
+    descricao: 'Matéria, notícia, artigo ou editorial publicado em jornal.',
+    estrutura: 'AUTOR. Título da matéria. <b>Título do jornal</b>, local, data. Seção, caderno ou página (se houver).',
+    exemplos: [
+      'SOBRENOME, Nome. Título da notícia. <b>Folha de S.Paulo</b>, São Paulo, 15 mar. 2020. Poder, p. A4.',
+      'AUTOR. Título da reportagem. <b>O Estado de S. Paulo</b>, São Paulo, 20 jan. 2021. Disponível em: [URL]. Acesso em: 11 jul. 2026.',
+      'AGÊNCIA BRASIL. Título da notícia. <b>Agência Brasil</b>, Brasília, 8 maio 2022. Disponível em: [URL]. Acesso em: 11 jul. 2026.',
+    ],
+    citacoes: [
+      'Citação indireta: (Sobrenome, 2020).',
+      'Citação direta: (Agência Brasil, 2022).',
+    ],
+  },
+  {
+    id: 'tese',
+    titulo: 'Trabalho acadêmico',
+    descricao: 'TCC, dissertação, tese e outros trabalhos apresentados a instituições acadêmicas.',
+    estrutura: 'AUTOR. <b>Título</b>: subtítulo. Ano. Número de folhas. Tipo de trabalho (grau e área) — Instituição, local, ano.',
+    exemplos: [
+      'DELFINO, Caroline Cavalcante da Silva. <b>Atenção integral à saúde da mulher</b>: um olhar sobre processo interseccional de gênero e raça. 2019. 124 f. Dissertação (Mestrado em Política Social) — Universidade Federal Fluminense, Niterói, 2019.',
+      'GOMES, Jaciara Josefa. <b>Tudo junto e misturado</b>: violência, sexualidade e muito mais nos significados do funk pernambucano “É nós do Recife para o mundo”. 2013. Tese (Doutorado em Linguística) — Universidade Federal de Pernambuco, Recife, 2013.',
+      'RODRIGUES, Filipe Azevedo. <b>Análise econômica da expansão do direito penal</b>. 2013. 195 f. Dissertação (Mestrado em Direito) — Universidade Federal do Rio Grande do Norte, Natal, 2013.',
+    ],
+    citacoes: [
+      'Citação indireta: Delfino (2019) observa que...',
+      'Citação direta: (Gomes, 2013, p. 28).',
+    ],
+  },
+  {
+    id: 'site',
+    titulo: 'Documento online',
+    descricao: 'Página da internet, relatório online, documento institucional disponível na web.',
+    estrutura: 'AUTOR/ENTIDADE. <b>Título</b>. Local ou site, data. Disponível em: [endereço eletrônico]. Acesso em: [dia mês. ano].',
+    exemplos: [
+      'INSTITUTO BRASILEIRO DE GEOGRAFIA E ESTATÍSTICA (IBGE). <b>Censo 2022</b>. Rio de Janeiro: IBGE, 2022. Disponível em: https://www.ibge.gov.br/estatisticas/sociais/populacao/22827-censo-demografico-2022.html. Acesso em: 28 jan. 2024.',
+      'WORLD HEALTH ORGANIZATION. <b>New WHO recommendations to accelerate progress on TB</b>. Geneva: World Health Organization, 20 Mar. 2019.',
+      'UNITED NATIONS-ECLAC. <b>The 2030 Agenda and the Sustainable Development Goals</b>: an opportunity for Latin America and the Caribbean. Santiago: United Nations Publication, 2018.',
+    ],
+    citacoes: [
+      'Citação indireta: (IBGE, 2022).',
+      'Citação direta: (United Nations-ECLAC, 2018, p. 12).',
+    ],
+  },
+  {
+    id: 'evento',
+    titulo: 'Evento',
+    descricao: 'Trabalho apresentado em congresso, reunião, seminário ou anais de evento.',
+    estrutura: 'AUTOR. Título do trabalho. In: NOME DO EVENTO, número., ano, local. <b>Anais...</b> Local: Editora, ano. p. inicial-final.',
+    exemplos: [
+      'SOBRENOME, Nome. Título do trabalho. In: CONGRESSO BRASILEIRO DE EDUCAÇÃO, 10., 2020, Brasília. <b>Anais...</b> Brasília: Editora, 2020. p. 10-20.',
+      'AUTOR. Título da apresentação. In: SEMINÁRIO INTERNACIONAL, 5., 2021, São Paulo. <b>Proceedings...</b> São Paulo: Instituição, 2021.',
+      'SHULLA, Kalterina. The COVID-19 pandemic and the achievement of the SDGs. In: VIRTUAL INTER-AGENCY EXPERT GROUP MEETING, 2021, online. <b>Proceedings...</b> 2021.',
+    ],
+    citacoes: [
+      'Citação indireta: (Sobrenome, 2020).',
+      'Citação direta: (Shulla, 2021, p. 5).',
+    ],
+  },
+  {
+    id: 'audiovisual',
+    titulo: 'Documento audiovisual',
+    descricao: 'Vídeo, filme, documentário, entrevista, podcast ou conteúdo audiovisual.',
+    estrutura: 'TÍTULO. Direção/produção/responsabilidade. Local: produtora, ano. Especificação do suporte ou disponibilidade online.',
+    exemplos: [
+      '<b>Título do documentário</b>. Direção: Nome do Diretor. Local: Produtora, 2020. 1 vídeo (90 min).',
+      '<b>Título da entrevista</b>. Entrevistado: Nome. Entrevistador: Nome. Canal, 2021. Disponível em: [URL]. Acesso em: 11 jul. 2026.',
+      '<b>Título do episódio</b>. Podcast Nome do Programa. Produção: Entidade, 2022. Disponível em: [URL]. Acesso em: 11 jul. 2026.',
+    ],
+    citacoes: [
+      'Citação indireta: (Título do documentário, 2020).',
+      'Citação direta: (Título da entrevista, 2021, 00:12:35).',
+    ],
+  },
+]
+
 function escHtml(text) {
   return String(text ?? '')
     .replace(/&/g, '&amp;')
@@ -86,6 +236,218 @@ function formatIssueHtml(text) {
   return escHtml(text)
     .replace(/&lt;i&gt;/g, '<i>')
     .replace(/&lt;\/i&gt;/g, '</i>')
+}
+
+function clonarAjudaAbntPadrao() {
+  return JSON.parse(JSON.stringify(AJUDA_ABNT_PADRAO))
+}
+
+function normalizarItemAjudaAbnt(item, fallback = {}) {
+  return {
+    id: String(item?.id || fallback.id || `tipo-${Date.now()}`),
+    titulo: String(item?.titulo || fallback.titulo || 'Tipo de referência'),
+    descricao: String(item?.descricao || fallback.descricao || ''),
+    estrutura: String(item?.estrutura || fallback.estrutura || ''),
+    exemplos: Array.from({ length: 3 }, (_, index) => String(item?.exemplos?.[index] ?? fallback.exemplos?.[index] ?? '')),
+    citacoes: Array.from({ length: 2 }, (_, index) => String(item?.citacoes?.[index] ?? fallback.citacoes?.[index] ?? '')),
+  }
+}
+
+function carregarAjudaAbntCatalogo() {
+  try {
+    const salvo = JSON.parse(localStorage.getItem(AJUDA_ABNT_STORAGE_KEY) || 'null')
+    if (!Array.isArray(salvo)) return clonarAjudaAbntPadrao()
+    const porId = new Map(salvo.map(item => [item?.id, item]))
+    return AJUDA_ABNT_PADRAO.map(padrao => normalizarItemAjudaAbnt(porId.get(padrao.id), padrao))
+  } catch {
+    return clonarAjudaAbntPadrao()
+  }
+}
+
+function salvarAjudaAbntCatalogo(catalogo) {
+  localStorage.setItem(AJUDA_ABNT_STORAGE_KEY, JSON.stringify(catalogo, null, 2))
+}
+
+function ajudaAbntHtml(text) {
+  return escHtml(text)
+    .replace(/&lt;(\/?)(b|strong|i|em)&gt;/gi, '<$1$2>')
+    .replace(/\n/g, '<br>')
+}
+
+function renderAjudaAbntCampo(item, campo, label, valor, extra = '') {
+  if (ajudaAbntModoEdicao) {
+    return `
+      <label class="abnt-help-field">
+        <span>${escHtml(label)}</span>
+        <textarea data-help-id="${escHtml(item.id)}" data-help-field="${escHtml(campo)}"${extra}>${escHtml(valor)}</textarea>
+      </label>
+    `
+  }
+  return `
+    <div class="abnt-help-block">
+      <strong>${escHtml(label)}</strong>
+      <p>${ajudaAbntHtml(valor) || '<span class="abnt-help-empty">Ainda não preenchido.</span>'}</p>
+    </div>
+  `
+}
+
+function renderAjudaAbntItem(item) {
+  const exemplos = item.exemplos.map((exemplo, index) =>
+    renderAjudaAbntCampo(item, `exemplos.${index}`, `Exemplo ${index + 1}`, exemplo)
+  ).join('')
+  const citacoes = item.citacoes.map((citacao, index) =>
+    renderAjudaAbntCampo(item, `citacoes.${index}`, `Citação ${index + 1}`, citacao)
+  ).join('')
+
+  return `
+    <article class="abnt-help-item" data-help-item="${escHtml(item.id)}">
+      <header>
+        <h3>${escHtml(item.titulo)}</h3>
+        ${ajudaAbntModoEdicao
+          ? `<textarea class="abnt-help-description" data-help-id="${escHtml(item.id)}" data-help-field="descricao">${escHtml(item.descricao)}</textarea>`
+          : `<p>${escHtml(item.descricao)}</p>`
+        }
+      </header>
+      ${renderAjudaAbntCampo(item, 'estrutura', 'Estrutura básica', item.estrutura)}
+      <div class="abnt-help-stack">${exemplos}</div>
+      <div class="abnt-help-stack">${citacoes}</div>
+    </article>
+  `
+}
+
+function renderAjudaAbnt() {
+  const catalogo = carregarAjudaAbntCatalogo()
+  if (!catalogo.some(item => item.id === ajudaAbntTipoAtivo)) {
+    ajudaAbntTipoAtivo = catalogo[0]?.id || ''
+  }
+  const indiceAtivo = Math.max(0, catalogo.findIndex(item => item.id === ajudaAbntTipoAtivo))
+  const itemAtivo = catalogo[indiceAtivo] || catalogo[0]
+  const anterior = catalogo[indiceAtivo - 1]
+  const proximo = catalogo[indiceAtivo + 1]
+  const acoes = ajudaAbntModoEdicao
+    ? `
+      <button type="button" class="primary" data-action="save-abnt-help">Salvar regras</button>
+      <button type="button" data-action="cancel-abnt-help-edit">Cancelar edição</button>
+      <button type="button" data-action="restore-abnt-help">Restaurar padrão</button>
+    `
+    : `
+      <button type="button" class="primary" data-action="edit-abnt-help">Editar regras</button>
+      <button type="button" data-action="export-abnt-help">Exportar JSON</button>
+      <button type="button" data-action="import-abnt-help">Importar JSON</button>
+    `
+
+  return `
+    <div class="abnt-help">
+      <div class="abnt-help-actions">${acoes}</div>
+      <nav class="abnt-help-nav" aria-label="Tipos de referência">
+        ${catalogo.map(item => `
+          <button
+            type="button"
+            class="${item.id === ajudaAbntTipoAtivo ? 'active' : ''}"
+            data-help-nav="${escHtml(item.id)}"
+          >${escHtml(item.titulo)}</button>
+        `).join('')}
+      </nav>
+      <div class="abnt-help-pager">
+        <button type="button" data-help-nav="${escHtml(anterior?.id || '')}" ${anterior ? '' : 'disabled'}>Anterior</button>
+        <span>${indiceAtivo + 1}/${catalogo.length}</span>
+        <button type="button" data-help-nav="${escHtml(proximo?.id || '')}" ${proximo ? '' : 'disabled'}>Próximo</button>
+      </div>
+      <p class="abnt-help-note">
+        As regras ficam salvas neste computador. Para compartilhar com outra instalação, use Exportar/Importar JSON.
+        JSON foi escolhido em vez de CSV porque preserva melhor exemplos com negrito e itálico.
+      </p>
+      <div class="abnt-help-list">
+        ${itemAtivo ? renderAjudaAbntItem(itemAtivo) : ''}
+      </div>
+    </div>
+  `
+}
+
+function navegarAjudaAbnt(tipoId) {
+  if (!tipoId) return
+  if (ajudaAbntModoEdicao) {
+    salvarAjudaAbntCatalogo(catalogoAjudaAbntDoFormulario())
+  }
+  ajudaAbntTipoAtivo = tipoId
+  sourceModalBody.innerHTML = renderAjudaAbnt()
+}
+
+function abrirAjudaAbnt({ editar = false } = {}) {
+  if (!sourceModal) return
+  ajudaAbntModoEdicao = editar
+  if (!ajudaAbntTipoAtivo) ajudaAbntTipoAtivo = carregarAjudaAbntCatalogo()[0]?.id || ''
+  sourceModalOccurrenceId = null
+  sourceModalItem = null
+  selecaoManualAtual = null
+  comentarioManualAtual = null
+  sourceModal.classList.add('abnt-help-open')
+  sourceModalTitle.textContent = 'Ajuda ABNT'
+  sourceModalCitation.textContent = 'Catálogo de tipos de referência, estruturas básicas e exemplos.'
+  sourceModalBody.innerHTML = renderAjudaAbnt()
+  sourceModal.classList.remove('hidden')
+}
+
+function catalogoAjudaAbntDoFormulario() {
+  const atual = carregarAjudaAbntCatalogo()
+  const porId = new Map(atual.map(item => [item.id, normalizarItemAjudaAbnt(item)]))
+  sourceModalBody?.querySelectorAll('[data-help-id][data-help-field]').forEach(input => {
+    const item = porId.get(input.dataset.helpId)
+    if (!item) return
+    const campo = input.dataset.helpField
+    const valor = input.value
+    if (campo === 'descricao' || campo === 'estrutura') {
+      item[campo] = valor
+      return
+    }
+    const partes = campo.split('.')
+    if (partes.length === 2 && Array.isArray(item[partes[0]])) {
+      const indice = Number(partes[1])
+      if (Number.isInteger(indice)) item[partes[0]][indice] = valor
+    }
+  })
+  return atual.map(item => porId.get(item.id))
+}
+
+function salvarAjudaAbntFormulario() {
+  salvarAjudaAbntCatalogo(catalogoAjudaAbntDoFormulario())
+  abrirAjudaAbnt({ editar: false })
+}
+
+function restaurarAjudaAbntPadrao() {
+  if (!confirm('Restaurar o catálogo padrão da Ajuda ABNT? As edições locais serão substituídas.')) return
+  localStorage.removeItem(AJUDA_ABNT_STORAGE_KEY)
+  abrirAjudaAbnt({ editar: false })
+}
+
+function exportarAjudaAbntJson() {
+  const blob = new Blob([JSON.stringify(carregarAjudaAbntCatalogo(), null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'abenita-ajuda-abnt.json'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+function importarAjudaAbntJson(file) {
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    try {
+      const catalogo = JSON.parse(String(reader.result || ''))
+      if (!Array.isArray(catalogo)) throw new Error('Formato inválido')
+      salvarAjudaAbntCatalogo(catalogo.map(item => normalizarItemAjudaAbnt(item)))
+      abrirAjudaAbnt({ editar: false })
+    } catch (error) {
+      alert(`Não foi possível importar o catálogo: ${error.message}`)
+    } finally {
+      if (abntHelpImportInput) abntHelpImportInput.value = ''
+    }
+  }
+  reader.readAsText(file, 'utf-8')
 }
 
 function normalizarTexto(text) {
@@ -153,6 +515,28 @@ function textoBloco(el) {
 
 function chaveTextoBloco(text) {
   return normalizarTexto(text).slice(0, 120)
+}
+
+function textoElementoMammoth(element) {
+  if (!element) return ''
+  if (element.type === 'text') return element.value || ''
+  if (element.type === 'tab') return '\t'
+  return (element.children || []).map(textoElementoMammoth).join('')
+}
+
+function criarTransformacaoMetadadosMammoth(paragraphs) {
+  if (!window.mammoth?.transforms?.paragraph) return null
+  return window.mammoth.transforms.paragraph(paragraph => {
+    const text = textoElementoMammoth(paragraph).replace(/\s+/g, ' ').trim()
+    if (text) {
+      paragraphs.push({
+        text,
+        styleId: paragraph.styleId || '',
+        styleName: paragraph.styleName || '',
+      })
+    }
+    return paragraph
+  })
 }
 
 function anexarMetadadosParagrafos(paragraphs) {
@@ -331,16 +715,18 @@ function stripMarks() {
 
 function atualizarEstadoExportacao() {
   if (!exportCorrectedBtn) return
-  const pronto = !!importedDocxArrayBuffer && (correcoesAplicadas.length > 0 || comentariosAplicados.length > 0)
+  const pronto = !!importedDocxArrayBuffer
+    && (correcoesAplicadas.length > 0 || comentariosAplicados.length > 0 || normalizacoesAutomaticasDocx > 0)
   exportCorrectedBtn.disabled = !pronto
   exportCorrectedBtn.title = pronto
-    ? 'Baixar uma cópia do DOCX com as correções e comentários validados.'
+    ? 'Baixar uma cópia do DOCX com as correções, comentários e normalizações automáticas.'
     : 'Importe um DOCX e valide ao menos uma correção ou comentário para habilitar.'
 }
 
 function limparCorrecoesAplicadas() {
   correcoesAplicadas = []
   comentariosAplicados = []
+  normalizacoesAutomaticasDocx = 0
   window.refsCorrecoesAplicadas = correcoesAplicadas
   window.refsComentariosAplicados = comentariosAplicados
   atualizarEstadoExportacao()
@@ -528,9 +914,11 @@ function montarReferencias(referenceBlocks) {
     if (ehBlocoNotaMammoth(block)) break
     const text = textoBloco(block)
     if (!text) continue
+    const html = sanitizarHtmlCorrecao(block.innerHTML || escHtml(text))
     if (!refs.length || pareceInicioReferencia(text)) {
       refs.push({
         text,
+        html,
         element: block,
         autoriaAntesDoNegrito: textoAntesDoPrimeiroNegrito(block),
         negritos: trechosNegrito(block),
@@ -538,6 +926,7 @@ function montarReferencias(referenceBlocks) {
       })
     } else {
       refs[refs.length - 1].text += ` ${text}`
+      refs[refs.length - 1].html += ` ${html}`
       refs[refs.length - 1].negritos = refs[refs.length - 1].negritos.concat(trechosNegrito(block))
       refs[refs.length - 1].italicos = refs[refs.length - 1].italicos.concat(trechosItalico(block))
     }
@@ -871,12 +1260,6 @@ function ehCitacaoAnoPaginaSemAutor(text) {
 
 function normalizarCitacoesInlineNosBlocos(blocks) {
   blocks.forEach(block => {
-    block.querySelectorAll?.('em, i').forEach(el => {
-      const text = normalizarEspacos(el.textContent || '')
-      if (/^et\s+al\.?$/i.test(text)) {
-        el.replaceWith(document.createTextNode(el.textContent || ''))
-      }
-    })
     block.normalize()
   })
 }
@@ -1001,30 +1384,120 @@ function nodeEstaEmItalico(node) {
   return !!node?.parentElement?.closest('em, i')
 }
 
-function textNodesInside(root, limiteSet) {
-  const nodes = []
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+function segmentosTextoBloco(block) {
+  const segments = []
+  let cursor = 0
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
-      if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT
-      if (node.parentElement?.closest('.ref-mark')) return NodeFilter.FILTER_REJECT
-      const block = node.parentElement?.closest('p, li, h1, h2, h3, h4, h5, h6')
-      if (!block || !limiteSet.has(block)) return NodeFilter.FILTER_REJECT
+      if (!node.nodeValue) return NodeFilter.FILTER_REJECT
       return NodeFilter.FILTER_ACCEPT
     },
   })
   let node
-  while ((node = walker.nextNode())) nodes.push(node)
-  return nodes
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue || ''
+    segments.push({
+      node,
+      text,
+      start: cursor,
+      end: cursor + text.length,
+    })
+    cursor += text.length
+  }
+  return {
+    text: segments.map(segment => segment.text).join(''),
+    segments,
+  }
+}
+
+function intervaloEstaEmItalico(segments, start, end) {
+  let encontrouTexto = false
+  for (const segment of segments) {
+    if (segment.end <= start || segment.start >= end) continue
+    const localStart = Math.max(start, segment.start) - segment.start
+    const localEnd = Math.min(end, segment.end) - segment.start
+    const trecho = segment.text.slice(localStart, localEnd)
+    if (!trecho.trim()) continue
+    encontrouTexto = true
+    if (!nodeEstaEmItalico(segment.node)) return false
+  }
+  return encontrouTexto
+}
+
+function trechosRegexEmItalico(text, segments, regex, offset = 0) {
+  const re = new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`)
+  let encontrou = false
+  let match
+  while ((match = re.exec(text))) {
+    encontrou = true
+    const start = offset + match.index
+    const end = start + match[0].length
+    if (!intervaloEstaEmItalico(segments, start, end)) return false
+  }
+  return encontrou
+}
+
+function textoAntesDoElementoNoBloco(el, root) {
+  const block = el.closest?.('p, li, h1, h2, h3, h4, h5, h6') || root
+  if (!block) return ''
+  const range = document.createRange()
+  try {
+    range.setStart(block, 0)
+    range.setEndBefore(el)
+    return range.toString()
+  } catch {
+    return ''
+  } finally {
+    range.detach?.()
+  }
+}
+
+function ultimoNoTextoAntesDoElementoNoBloco(el, root) {
+  const block = el.closest?.('p, li, h1, h2, h3, h4, h5, h6') || root
+  if (!block) return null
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue) return NodeFilter.FILTER_REJECT
+      if (node.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        return NodeFilter.FILTER_ACCEPT
+      }
+      return NodeFilter.FILTER_REJECT
+    },
+  })
+  let ultimo = null
+  let node
+  while ((node = walker.nextNode())) ultimo = node
+  return ultimo
+}
+
+function normalizarIndicadoresNumeroSobrescrito(root) {
+  if (!root?.querySelectorAll) return 0
+  let alteracoes = 0
+  root.querySelectorAll('sup').forEach(sup => {
+    const text = normalizarEspacos(sup.textContent || '')
+    if (!/^[oº]$/i.test(text)) return
+    const antes = textoAntesDoElementoNoBloco(sup, root).replace(/\s+$/g, '')
+    if (!/(?:^|[\s([{/"'“‘])n$/i.test(antes)) return
+    const anterior = ultimoNoTextoAntesDoElementoNoBloco(sup, root)
+    if (anterior?.parentElement?.closest('strong, b') && /n\s*$/i.test(anterior.nodeValue || '')) {
+      anterior.nodeValue = String(anterior.nodeValue || '').replace(/n(\s*)$/i, `nº$1`)
+      sup.remove()
+    } else {
+      sup.replaceWith(document.createTextNode('º'))
+    }
+    alteracoes += 1
+  })
+  root.normalize?.()
+  return alteracoes
 }
 
 function coletarCitacoes(bodyBlocks, referencias) {
   const matches = []
   normalizarCitacoesInlineNosBlocos(bodyBlocks)
-  const limiteSet = new Set(bodyBlocks)
-  const nodes = textNodesInside(editor, limiteSet)
 
-  for (const node of nodes) {
-    const text = node.nodeValue
+  for (const block of bodyBlocks) {
+    const { text, segments } = segmentosTextoBloco(block)
+    if (!text.trim()) continue
     const regex = /\(([^()\n]{0,220}(?:19|20)\d{2}[a-z]?(?:[^()\n]{0,120})?)\)/gi
     let match
     while ((match = regex.exec(text))) {
@@ -1032,8 +1505,12 @@ function coletarCitacoes(bodyBlocks, referencias) {
       if (ehParenteseNaoBibliografico(inside)) continue
       if (/^\s*\d{4}\s*[-–—]\s*\d{4}\s*$/.test(inside)) continue
       const issues = problemasEspacoIndicadores(inside)
-      if (/\bapud\b/i.test(inside) && !nodeEstaEmItalico(node)) {
+      const insideOffset = match.index + 1
+      if (/\bapud\b/i.test(inside) && !trechosRegexEmItalico(inside, segments, /\bapud\b/gi, insideOffset)) {
         issues.push('A expressão <i>apud</i> deve estar em itálico.')
+      }
+      if (/\bet\s+al\.?/i.test(inside) && !trechosRegexEmItalico(inside, segments, /\bet\s+al\.?/gi, insideOffset)) {
+        issues.push('A expressão <i>et al.</i> deve estar em itálico.')
       }
       let units = extrairUnidadesCitacao(inside)
       let start = match.index
@@ -1062,6 +1539,7 @@ function coletarCitacoes(bodyBlocks, referencias) {
           || autorExisteNaLista(autorNarrativo.text, referencias)
         )
         if (aceitarAutorAntes) {
+          const autorAusenteIssue = 'Citação com ano e página sem indicação de autor. Informe a autoria ou confira se a referência deve ser vinculada pelo contexto.'
           units = [{
             raw: `${autorNarrativo.text} (${inside})`,
             authorsRaw: autorNarrativo.text,
@@ -1069,6 +1547,8 @@ function coletarCitacoes(bodyBlocks, referencias) {
             ano,
             narrativa: true,
           }]
+          const issueIndex = issues.indexOf(autorAusenteIssue)
+          if (issueIndex >= 0) issues.splice(issueIndex, 1)
           start = autorNarrativo.start
           display = text.slice(start, regex.lastIndex)
         }
@@ -1076,7 +1556,7 @@ function coletarCitacoes(bodyBlocks, referencias) {
 
       if (!units.length) continue
       matches.push({
-        node,
+        block,
         start,
         end: regex.lastIndex,
         text: display,
@@ -1087,7 +1567,7 @@ function coletarCitacoes(bodyBlocks, referencias) {
   }
 
   return matches.sort((a, b) => {
-    if (a.node === b.node) return b.start - a.start || b.end - a.end
+    if (a.block === b.block) return b.start - a.start || b.end - a.end
     return 0
   })
 }
@@ -1375,13 +1855,22 @@ function termoEmItalico(ref, regex) {
   return (ref.italicos || []).some(trecho => regex.test(trecho))
 }
 
+function termoHtmlEmItalico(html, regex) {
+  if (!html || !/\S/.test(html)) return false
+  const template = document.createElement('template')
+  template.innerHTML = sanitizarHtmlCorrecao(html)
+  const text = template.content.textContent || ''
+  if (!regex.test(text)) return false
+  return trechosRegexEmItalico(text, segmentosTextoBloco(template.content).segments, regex, 0)
+}
+
 function validarItalicosReferencia(ref) {
   const issues = []
   const text = normalizarEspacos(ref.text || '')
-  if (/\bet\s+al\.?/i.test(text) && !termoEmItalico(ref, /\bet\s+al\.?/i)) {
+  if (/\bet\s+al\.?/i.test(text) && !termoHtmlEmItalico(ref.html, /\bet\s+al\.?/gi) && !termoEmItalico(ref, /\bet\s+al\.?/i)) {
     issues.push('A expressão "et al." deve estar em itálico.')
   }
-  if (/\bIn:\s/i.test(text) && !termoEmItalico(ref, /^In:?$/i)) {
+  if (/\bIn:\s/i.test(text) && !termoHtmlEmItalico(ref.html, /\bIn:/gi) && !termoEmItalico(ref, /^In:?$/i)) {
     issues.push('A expressão "In:" deve estar em itálico.')
   }
   return issues
@@ -1515,8 +2004,70 @@ function auditarReferenciaAbnt(ref, avisosExtras) {
   return { tipo, issues }
 }
 
+function pontoDomPorOffsetTexto(root, offset) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let cursor = 0
+  let node
+  let ultimo = null
+  while ((node = walker.nextNode())) {
+    const length = (node.nodeValue || '').length
+    if (offset <= cursor + length) {
+      return { node, offset: Math.max(0, offset - cursor) }
+    }
+    cursor += length
+    ultimo = node
+  }
+  if (ultimo) return { node: ultimo, offset: (ultimo.nodeValue || '').length }
+  return { node: root, offset: root.childNodes.length }
+}
+
+function rangePorOffsetTexto(root, start, end) {
+  const range = document.createRange()
+  const inicio = pontoDomPorOffsetTexto(root, start)
+  const fim = pontoDomPorOffsetTexto(root, end)
+  range.setStart(inicio.node, inicio.offset)
+  range.setEnd(fim.node, fim.offset)
+  return range
+}
+
+function criarSpanMarcacao(match) {
+  const span = document.createElement('span')
+  span.className = `ref-mark ${match.status}`
+  if (match.status === 'ok' && match.issues?.length) span.classList.add('format-warning')
+  span.dataset.occurrenceId = match.id
+  span.title = match.resultados.map(r => `${r.unit.raw}: ${textoStatus(r.status)}`)
+    .concat(match.status === 'ok' && match.issues?.length ? ['Checagem ABNT pendente'] : [])
+    .join('\n')
+  return span
+}
+
+function adicionarOcorrenciaMarcada(list, match, span) {
+  list.push({
+    id: match.id,
+    text: span.textContent,
+    status: match.status,
+    resultados: match.resultados,
+    issues: match.issues || [],
+    element: span,
+  })
+
+  if (match.issues?.length) {
+    list.push({
+      id: `${match.id}-abnt`,
+      text: span.textContent,
+      status: 'format',
+      resultados: [],
+      referenceText: span.textContent,
+      referenceType: 'citacao',
+      issues: match.issues,
+      element: span,
+    })
+  }
+}
+
 function aplicarMarcacoes(matches, referencias) {
   const list = []
+  const matchesByBlock = new Map()
   const matchesByNode = new Map()
 
   matches.forEach((match, index) => {
@@ -1539,8 +2090,33 @@ function aplicarMarcacoes(matches, referencias) {
     ))
     const status = classeResultado(resultados.map(r => r.status))
     const id = `ref-${Date.now()}-${index}`
-    if (!matchesByNode.has(match.node)) matchesByNode.set(match.node, [])
-    matchesByNode.get(match.node).push({ ...match, id, resultados, status, issues })
+    const item = { ...match, id, resultados, status, issues }
+    if (match.block) {
+      if (!matchesByBlock.has(match.block)) matchesByBlock.set(match.block, [])
+      matchesByBlock.get(match.block).push(item)
+    } else {
+      if (!matchesByNode.has(match.node)) matchesByNode.set(match.node, [])
+      matchesByNode.get(match.node).push(item)
+    }
+  })
+
+  matchesByBlock.forEach((blockMatches, block) => {
+    if (!block.isConnected) return
+    const ordered = blockMatches
+      .sort((a, b) => a.start - b.start || b.end - a.end)
+      .filter((match, index, arr) => index === 0 || match.start >= arr[index - 1].end)
+
+    ordered.slice().reverse().forEach(match => {
+      const range = rangePorOffsetTexto(block, match.start, match.end)
+      const span = criarSpanMarcacao(match)
+      span.appendChild(range.extractContents())
+      range.insertNode(span)
+      match.span = span
+    })
+
+    ordered.forEach(match => {
+      if (match.span) adicionarOcorrenciaMarcada(list, match, match.span)
+    })
   })
 
   matchesByNode.forEach((nodeMatches, node) => {
@@ -1556,37 +2132,11 @@ function aplicarMarcacoes(matches, referencias) {
     ordered.forEach(match => {
       if (match.start > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, match.start)))
 
-      const span = document.createElement('span')
-      span.className = `ref-mark ${match.status}`
-      if (match.status === 'ok' && match.issues?.length) span.classList.add('format-warning')
-      span.dataset.occurrenceId = match.id
-      span.title = match.resultados.map(r => `${r.unit.raw}: ${textoStatus(r.status)}`)
-        .concat(match.status === 'ok' && match.issues?.length ? ['Checagem ABNT pendente'] : [])
-        .join('\n')
+      const span = criarSpanMarcacao(match)
       span.textContent = text.slice(match.start, match.end)
       fragment.appendChild(span)
 
-      list.push({
-        id: match.id,
-        text: span.textContent,
-        status: match.status,
-        resultados: match.resultados,
-        issues: match.issues || [],
-        element: span,
-      })
-
-      if (match.issues?.length) {
-        list.push({
-          id: `${match.id}-abnt`,
-          text: span.textContent,
-          status: 'format',
-          resultados: [],
-          referenceText: span.textContent,
-          referenceType: 'citacao',
-          issues: match.issues,
-          element: span,
-        })
-      }
+      adicionarOcorrenciaMarcada(list, match, span)
 
       cursor = match.end
     })
@@ -1898,7 +2448,15 @@ function renderFilters() {
     ['missing', 'Ausentes'],
     ['format', 'Checagem ABNT'],
   ]
-  filtersEl.innerHTML = groups.map(([id, label]) => (
+  const counts = occurrences.reduce((acc, item) => {
+    acc[item.status] = (acc[item.status] || 0) + 1
+    return acc
+  }, {})
+  const visiveis = groups.filter(([id]) => id === 'todos' || counts[id] > 0)
+  if (!visiveis.some(([id]) => id === activeFilter)) {
+    activeFilter = 'todos'
+  }
+  filtersEl.innerHTML = visiveis.map(([id, label]) => (
     `<button type="button" class="filter ${id}${activeFilter === id ? ' active' : ''}" data-filter="${id}">${label}</button>`
   )).join('')
 }
@@ -2033,7 +2591,7 @@ function renderReferencesPanel(referencias) {
       <article class="reference-item" data-ref-card="${ref.index}">
         <button type="button" class="reference-main" data-ref-index="${ref.index}">
           <strong>${String(ref.index + 1).padStart(2, '0')}</strong>
-          <span>${escHtml(ref.text)}</span>
+          <span>${ref.html || escHtml(ref.text)}</span>
         </button>
         ${renderReferenceUrls(ref)}
         <div class="reference-citations">${links}</div>
@@ -2391,6 +2949,92 @@ function aplicarAnoDuplicadoHtml(item, root) {
   substituirIntervaloTextoFragmento(root, ultimo.index, ultimo.index + ultimo.text.length, anoEsperado)
 }
 
+function aplicarItalicoEtAlHtml(root) {
+  if (!root) return
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !/\bet\s+al\.?/i.test(node.nodeValue)) return NodeFilter.FILTER_REJECT
+      if (node.parentElement?.closest('em, i')) return NodeFilter.FILTER_REJECT
+      return NodeFilter.FILTER_ACCEPT
+    },
+  })
+  const nodes = []
+  let node
+  while ((node = walker.nextNode())) nodes.push(node)
+
+  nodes.forEach(textNode => {
+    const fragment = document.createDocumentFragment()
+    const text = textNode.nodeValue || ''
+    let cursor = 0
+    text.replace(/\bet\s+al\.?/gi, (match, index) => {
+      if (index > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, index)))
+      const em = document.createElement('em')
+      em.textContent = /\.$/.test(match) ? match : `${match}.`
+      fragment.appendChild(em)
+      cursor = index + match.length
+      return match
+    })
+    if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)))
+    textNode.replaceWith(fragment)
+  })
+}
+
+function itemTemAvisoPontoFinalReferencia(item) {
+  return (item?.issues || []).some(issue => /refer[eê]ncia deve terminar com ponto final/i.test(issue))
+}
+
+function corrigirPontoFinalReferencia(text) {
+  const valor = String(text || '').replace(/\s+$/g, '')
+  if (!valor || /[.!?]$/.test(valor)) return text
+  return `${valor}.`
+}
+
+function inserirTextoAposNoRaiz(root, node, text) {
+  if (!root || !node || !text) return
+  let top = node
+  while (top.parentNode && top.parentNode !== root) top = top.parentNode
+  const refNode = top.parentNode === root ? top.nextSibling : node.nextSibling
+  const parent = top.parentNode === root ? root : node.parentNode
+  parent?.insertBefore(document.createTextNode(text), refNode || null)
+}
+
+function aplicarPontoFinalReferenciaHtml(root) {
+  if (!root) return
+  const text = textoDoFragmento(root).replace(/\s+$/g, '')
+  if (!text || /[.!?]$/.test(text)) return
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let lastTextNode = null
+  let node
+  while ((node = walker.nextNode())) {
+    if ((node.nodeValue || '').trim()) lastTextNode = node
+  }
+
+  if (!lastTextNode) {
+    root.appendChild(document.createTextNode('.'))
+    return
+  }
+
+  const trailing = (lastTextNode.nodeValue || '').match(/\s*$/)?.[0] || ''
+  if (trailing) lastTextNode.nodeValue = lastTextNode.nodeValue.slice(0, -trailing.length)
+  inserirTextoAposNoRaiz(root, lastTextNode, `.${trailing}`)
+}
+
+function itemTemAvisoEtAlItalico(item) {
+  const issues = [...(item?.issues || [])]
+  const base = ocorrenciaEhCitacao(item) ? ocorrenciaBaseDaCitacao(item) : null
+  if (base && base !== item) issues.push(...(base.issues || []))
+  return issues.some(issue => /et al.*it[aá]lico/i.test(issue))
+}
+
+function forcarItalicoEtAlSeNecessario(item, html) {
+  if (!itemTemAvisoEtAlItalico(item) || !/\bet\s+al\.?/i.test(textoDeHtmlCorrecao(html))) return html
+  const template = document.createElement('template')
+  template.innerHTML = sanitizarHtmlCorrecao(html)
+  aplicarItalicoEtAlHtml(template.content)
+  return template.innerHTML
+}
+
 function aplicarSugestoesTextoEmHtml(item, html) {
   const template = document.createElement('template')
   template.innerHTML = sanitizarHtmlCorrecao(html)
@@ -2399,6 +3043,12 @@ function aplicarSugestoesTextoEmHtml(item, html) {
   aplicarMilharPaginasHtml(template.content)
   aplicarAutoriaSubstituidaHtml(item, template.content)
   aplicarAnoDuplicadoHtml(item, template.content)
+  if (itemTemAvisoPontoFinalReferencia(item)) {
+    aplicarPontoFinalReferenciaHtml(template.content)
+  }
+  if (itemTemAvisoEtAlItalico(item)) {
+    aplicarItalicoEtAlHtml(template.content)
+  }
   return template.innerHTML !== antes ? template.innerHTML : ''
 }
 
@@ -2431,6 +3081,9 @@ function sugerirCorrecaoOcorrencia(item) {
   const atual = textoAtualOcorrencia(item)
   const base = ocorrenciaBaseDaCitacao(item)
   let sugestao = sugerirAnoDuplicado(item, sugerirAutoriaSubstituida(item, corrigirIndicadoresBibliograficos(atual)))
+  if (itemTemAvisoPontoFinalReferencia(item)) {
+    sugestao = corrigirPontoFinalReferencia(sugestao)
+  }
 
   ;(base.resultados || []).forEach(resultado => {
     const raw = resultado.unit?.authorsRaw || ''
@@ -2463,11 +3116,17 @@ function sanitizarHtmlCorrecao(html) {
       el.replaceWith(em)
       return
     }
+    if (tag === 'sub') {
+      const sub = document.createElement('sub')
+      sub.innerHTML = el.innerHTML
+      el.replaceWith(sub)
+      return
+    }
     if (tag === 'script' || tag === 'style') {
       el.remove()
       return
     }
-    if (!['strong', 'em', 'br'].includes(tag)) {
+    if (!['strong', 'em', 'sup', 'sub', 'br'].includes(tag)) {
       el.replaceWith(...Array.from(el.childNodes))
       return
     }
@@ -2984,6 +3643,8 @@ function fecharModalFonte() {
   sourceModalItem = null
   selecaoManualAtual = null
   comentarioManualAtual = null
+  ajudaAbntModoEdicao = false
+  sourceModal?.classList.remove('abnt-help-open')
   sourceModal?.classList.add('hidden')
 }
 
@@ -3106,7 +3767,7 @@ function montarMudancaCorrecao(item, depoisHtml) {
   const bloco = blocoDaOcorrencia(item)
   const antes = textoAtualOcorrencia(item)
   const antesHtml = sanitizarHtmlCorrecao(item.element.innerHTML)
-  const htmlFinal = sanitizarHtmlCorrecao(depoisHtml)
+  const htmlFinal = forcarItalicoEtAlSeNecessario(item, sanitizarHtmlCorrecao(depoisHtml))
   const depois = textoDeHtmlCorrecao(htmlFinal)
   if (!normalizarEspacos(depois)) return null
   if (antes === depois && antesHtml === htmlFinal) return null
@@ -3155,15 +3816,6 @@ function aplicarCorrecaoOcorrencia() {
 
   mudancas.forEach(mudanca => {
     mudanca.item.element.innerHTML = mudanca.depoisHtml
-  })
-  conferirReferencias()
-
-  const validacoes = mudancas.map(mudanca => ({
-    mudanca,
-    validacao: validarCorrecaoAplicada(mudanca.item, mudanca.depois, mudanca.bloco),
-  }))
-  const corrigidas = validacoes.filter(resultado => resultado.validacao.corrigida)
-  corrigidas.forEach(({ mudanca }) => {
     registrarCorrecaoValidada(
       mudanca.item,
       mudanca.antes,
@@ -3173,6 +3825,13 @@ function aplicarCorrecaoOcorrencia() {
       mudanca.paragrafoAntes,
     )
   })
+  conferirReferencias()
+
+  const validacoes = mudancas.map(mudanca => ({
+    mudanca,
+    validacao: validarCorrecaoAplicada(mudanca.item, mudanca.depois, mudanca.bloco),
+  }))
+  const corrigidas = validacoes.filter(resultado => resultado.validacao.corrigida)
 
   if (corrigidas.length === mudancas.length) {
     renderSummary(ultimoResultado)
@@ -3205,8 +3864,8 @@ function aplicarCorrecaoOcorrencia() {
   const novoFeedback = sourceModalBody?.querySelector('#correctionFeedback')
   if (novoFeedback) {
     novoFeedback.textContent = pendenciasTexto
-      ? `A correção foi aplicada, mas ainda há pendências:\n${pendenciasTexto}`
-      : 'A correção foi aplicada, mas a ocorrência não foi reconhecida como totalmente resolvida.'
+      ? `A correção foi aplicada e registrada para o futuro arquivo corrigido, mas ainda há pendências:\n${pendenciasTexto}`
+      : 'A correção foi aplicada e registrada para o futuro arquivo corrigido, mas a ocorrência não foi reconhecida como totalmente resolvida.'
   }
 }
 
@@ -3235,20 +3894,33 @@ async function importDocx(file) {
       console.warn('Não foi possível extrair estilos do DOCX.', err)
     }
   }
-  const result = await window.mammoth.convertToHtml({ arrayBuffer }, {
+  const paragrafosMammoth = []
+  const transformDocument = criarTransformacaoMetadadosMammoth(paragrafosMammoth)
+  const mammothOptions = {
     convertImage: () => Promise.resolve([]),
     styleMap: [
       "p[style-name='Title'] => h1:fresh",
       "p[style-name='Heading 1'] => h1:fresh",
       "p[style-name='Heading 2'] => h2:fresh",
       "p[style-name='Heading 3'] => h3:fresh",
+      "r.ZCARACTERENegrito-Itlico => strong > em",
+      "r.ZCARACTERENegrito => strong",
+      "r.ZCARACTEREItlico => em",
+      "r.ZCARACTERESobrescrito => sup",
+      "r[style-name='_ZCARACTERE>Negrito-Itálico'] => strong > em",
+      "r[style-name='_ZCARACTERE>Negrito'] => strong",
+      "r[style-name='_ZCARACTERE>Itálico'] => em",
+      "r[style-name='_ZCARACTERE>Sobrescrito'] => sup",
       "b => strong",
       "i => em",
     ],
-  })
+  }
+  if (transformDocument) mammothOptions.transformDocument = transformDocument
+  const result = await window.mammoth.convertToHtml({ arrayBuffer }, mammothOptions)
   editor.innerHTML = result.value || '<p></p>'
+  normalizacoesAutomaticasDocx = normalizarIndicadoresNumeroSobrescrito(editor)
   ocultarImagensDoEditor()
-  anexarMetadadosParagrafos(estruturaDocx?.paragraphs || [])
+  anexarMetadadosParagrafos(estruturaDocx?.paragraphs?.length ? estruturaDocx.paragraphs : paragrafosMammoth)
   const refsElegiveis = encontrarSecoesReferenciasElegiveis()
   if (refsElegiveis.length > 1 && docxParagraphMeta.length) {
     const styles = estilosDisponiveisParaCapitulos()
@@ -3259,7 +3931,62 @@ async function importDocx(file) {
     }
   }
   conferirReferencias()
+  atualizarEstadoExportacao()
   dropZone.innerHTML = `<strong>${escHtml(file.name)}</strong> importado. Conferencia executada automaticamente.`
+}
+
+function solicitarAutorAlteracoes() {
+  return new Promise(resolve => {
+    if (!exportAuthorModal || !exportAuthorInput) {
+      resolve(localStorage.getItem(EXPORT_AUTHOR_STORAGE_KEY) || 'ABeNiTa')
+      return
+    }
+
+    let resolvido = false
+    const fechar = valor => {
+      if (resolvido) return
+      resolvido = true
+      exportAuthorModal.classList.add('hidden')
+      exportAuthorConfirm?.removeEventListener('click', confirmar)
+      exportAuthorCancel?.removeEventListener('click', cancelar)
+      exportAuthorModal.removeEventListener('click', cliqueFora)
+      exportAuthorInput.removeEventListener('keydown', tecla)
+      resolve(valor)
+    }
+    const confirmar = () => {
+      const nome = normalizarEspacos(exportAuthorInput.value)
+      if (!nome) {
+        exportAuthorInput.focus()
+        return
+      }
+      localStorage.setItem(EXPORT_AUTHOR_STORAGE_KEY, nome)
+      fechar(nome)
+    }
+    const cancelar = () => fechar(null)
+    const cliqueFora = event => {
+      if (event.target.closest('[data-export-author-cancel]')) cancelar()
+    }
+    const tecla = event => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        confirmar()
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        cancelar()
+      }
+    }
+
+    exportAuthorInput.value = localStorage.getItem(EXPORT_AUTHOR_STORAGE_KEY) || ''
+    exportAuthorConfirm?.addEventListener('click', confirmar)
+    exportAuthorCancel?.addEventListener('click', cancelar)
+    exportAuthorModal.addEventListener('click', cliqueFora)
+    exportAuthorInput.addEventListener('keydown', tecla)
+    exportAuthorModal.classList.remove('hidden')
+    setTimeout(() => {
+      exportAuthorInput.focus()
+      exportAuthorInput.select()
+    }, 0)
+  })
 }
 
 async function exportarDocxCorrigido() {
@@ -3267,14 +3994,17 @@ async function exportarDocxCorrigido() {
     alert('Importe um DOCX antes de baixar o arquivo corrigido.')
     return
   }
-  if (!correcoesAplicadas.length && !comentariosAplicados.length) {
-    alert('Ainda não há correções ou comentários para aplicar.')
+  if (!correcoesAplicadas.length && !comentariosAplicados.length && !normalizacoesAutomaticasDocx) {
+    alert('Ainda não há correções, comentários ou normalizações automáticas para aplicar.')
     return
   }
   if (!window.refsBridge?.exportarDocxCorrigido) {
     alert('A exportação do DOCX corrigido está disponível no app desktop do ABeNiTa.')
     return
   }
+
+  const autorAlteracoes = await solicitarAutorAlteracoes()
+  if (!autorAlteracoes) return
 
   exportCorrectedBtn.disabled = true
   exportCorrectedBtn.textContent = 'Gerando...'
@@ -3284,6 +4014,7 @@ async function exportarDocxCorrigido() {
       arrayBuffer: importedDocxArrayBuffer,
       correcoes: correcoesAplicadas,
       comentarios: comentariosAplicados,
+      autorAlteracoes,
     })
     if (result?.cancelado) return
     if (!result?.ok) {
@@ -3291,7 +4022,9 @@ async function exportarDocxCorrigido() {
       return
     }
     const ignoradas = Array.isArray(result.ignoradas) ? result.ignoradas.length : 0
-    dropZone.textContent = `DOCX corrigido salvo. Correções aplicadas: ${result.aplicadas || 0}; comentários inseridos: ${result.comentariosInseridos || 0}${ignoradas ? `; não encontradas: ${ignoradas}` : ''}.`
+    const normalizacoes = result.normalizacoesAutomaticas || 0
+    dropZone.textContent = `DOCX corrigido salvo. Correções aplicadas: ${result.aplicadas || 0}; normalizações automáticas: ${normalizacoes}; comentários inseridos: ${result.comentariosInseridos || 0}${ignoradas ? `; não encontradas: ${ignoradas}` : ''}.`
+    normalizacoesAutomaticasDocx = Math.max(0, normalizacoesAutomaticasDocx - normalizacoes)
     if (ignoradas) {
       alert(`DOCX salvo, mas ${ignoradas} item(ns) não foram encontrados no arquivo original. O restante foi aplicado sem alterar outras áreas.`)
     }
@@ -3313,6 +4046,7 @@ docxInput.addEventListener('change', event => {
 })
 
 runBtn.addEventListener('click', conferirReferencias)
+abntHelpBtn?.addEventListener('click', () => abrirAjudaAbnt({ editar: false }))
 manualReplaceBtn?.addEventListener('click', abrirModalAlterarTextoSelecionado)
 manualCommentBtn?.addEventListener('click', abrirModalComentarTextoSelecionado)
 exportCorrectedBtn?.addEventListener('click', exportarDocxCorrigido)
@@ -3430,6 +4164,35 @@ sourceModalBody?.addEventListener('mousedown', event => {
   if (event.target.closest('[data-format-command]')) event.preventDefault()
 })
 sourceModalBody?.addEventListener('click', event => {
+  const navAjudaAbnt = event.target.closest('[data-help-nav]')
+  if (navAjudaAbnt) {
+    navegarAjudaAbnt(navAjudaAbnt.dataset.helpNav)
+    return
+  }
+  if (event.target.closest('[data-action="edit-abnt-help"]')) {
+    abrirAjudaAbnt({ editar: true })
+    return
+  }
+  if (event.target.closest('[data-action="save-abnt-help"]')) {
+    salvarAjudaAbntFormulario()
+    return
+  }
+  if (event.target.closest('[data-action="cancel-abnt-help-edit"]')) {
+    abrirAjudaAbnt({ editar: false })
+    return
+  }
+  if (event.target.closest('[data-action="restore-abnt-help"]')) {
+    restaurarAjudaAbntPadrao()
+    return
+  }
+  if (event.target.closest('[data-action="export-abnt-help"]')) {
+    exportarAjudaAbntJson()
+    return
+  }
+  if (event.target.closest('[data-action="import-abnt-help"]')) {
+    abntHelpImportInput?.click()
+    return
+  }
   const formatBtn = event.target.closest('[data-format-command]')
   if (formatBtn) {
     formatarSelecaoCorrecao(formatBtn.dataset.formatCommand)
@@ -3448,6 +4211,9 @@ sourceModalBody?.addEventListener('click', event => {
     return
   }
   if (event.target.closest('[data-action="apply-correction"]')) aplicarCorrecaoOcorrencia()
+})
+abntHelpImportInput?.addEventListener('change', event => {
+  importarAjudaAbntJson(event.target.files?.[0])
 })
 sourceModal?.addEventListener('click', event => {
   if (event.target.closest('[data-source-close]')) fecharModalFonte()

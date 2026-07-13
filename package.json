@@ -1,6 +1,6 @@
 {
   "name": "refs",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Conferência de citações autor-data e referências bibliográficas.",
   "author": "Luiz BMC",
   "main": "electron/main.js",

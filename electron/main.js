@@ -222,7 +222,7 @@ function normalizarNomeEstilo(text) {
 }
 
 function localizarEstilosCaracter(stylesXml) {
-  const encontrados = { bold: '', italic: '', boldItalic: '' };
+  const encontrados = { bold: '', italic: '', boldItalic: '', superscript: '' };
   String(stylesXml || '').replace(/<w:style\b[\s\S]*?<\/w:style>/g, (styleXml) => {
     if (!/\bw:type="character"/.test(styleXml)) return styleXml;
     const id = (styleXml.match(/\bw:styleId="([^"]+)"/) || [])[1] || '';
@@ -231,6 +231,7 @@ function localizarEstilosCaracter(stylesXml) {
     if (normal === '_zcaractere>negrito') encontrados.bold = decodeXml(id);
     if (normal === '_zcaractere>italico') encontrados.italic = decodeXml(id);
     if (normal === '_zcaractere>negrito-italico') encontrados.boldItalic = decodeXml(id);
+    if (normal === '_zcaractere>sobrescrito') encontrados.superscript = decodeXml(id);
     return styleXml;
   });
   return encontrados;
@@ -260,6 +261,7 @@ function removerPropsNegritoItalico(rPr) {
   props = props.replace(/<w:bCs\b[^>]*(?:\/>|>[\s\S]*?<\/w:bCs>)/g, '');
   props = props.replace(/<w:i\b[^>]*(?:\/>|>[\s\S]*?<\/w:i>)/g, '');
   props = props.replace(/<w:iCs\b[^>]*(?:\/>|>[\s\S]*?<\/w:iCs>)/g, '');
+  props = props.replace(/<w:vertAlign\b[^>]*(?:\/>|>[\s\S]*?<\/w:vertAlign>)/g, '');
   return props;
 }
 
@@ -281,31 +283,56 @@ function aplicarPropsNegritoItalico(rPr, segment, charStyles) {
   let props = removerRunStyle(removerPropsNegritoItalico(rPr));
   const hasBoldStyle = !!charStyles?.bold;
   const hasItalicStyle = !!charStyles?.italic;
+  const hasSuperscriptStyle = !!charStyles?.superscript;
+  const aplicarSobrescrito = () => {
+    if (hasSuperscriptStyle && !segment.bold && !segment.italic && !segment.sub) {
+      props = inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.superscript)}"/>`);
+    } else {
+      props = inserirRunProp(props, '<w:vertAlign w:val="superscript"/>');
+    }
+  };
 
   if (segment.bold && !segment.italic && hasBoldStyle) {
-    return inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.bold)}"/>`);
+    props = inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.bold)}"/>`);
+    if (segment.sup) aplicarSobrescrito();
+    if (segment.sub) props = inserirRunProp(props, '<w:vertAlign w:val="subscript"/>');
+    return props;
   }
   if (segment.italic && !segment.bold && hasItalicStyle) {
-    return inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.italic)}"/>`);
+    props = inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.italic)}"/>`);
+    if (segment.sup) aplicarSobrescrito();
+    if (segment.sub) props = inserirRunProp(props, '<w:vertAlign w:val="subscript"/>');
+    return props;
   }
 
   if (segment.bold && segment.italic) {
     if (charStyles?.boldItalic) {
-      return inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.boldItalic)}"/>`);
+      props = inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.boldItalic)}"/>`);
+      if (segment.sup) aplicarSobrescrito();
+      if (segment.sub) props = inserirRunProp(props, '<w:vertAlign w:val="subscript"/>');
+      return props;
     }
     if (hasBoldStyle) {
       props = inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.bold)}"/>`);
-      return inserirRunProp(props, '<w:i/><w:iCs/>');
+      props = inserirRunProp(props, '<w:i/><w:iCs/>');
+      if (segment.sup) aplicarSobrescrito();
+      if (segment.sub) props = inserirRunProp(props, '<w:vertAlign w:val="subscript"/>');
+      return props;
     }
     if (hasItalicStyle) {
       props = inserirRunProp(props, `<w:rStyle w:val="${encodeXmlAttr(charStyles.italic)}"/>`);
-      return inserirRunProp(props, '<w:b/><w:bCs/>');
+      props = inserirRunProp(props, '<w:b/><w:bCs/>');
+      if (segment.sup) aplicarSobrescrito();
+      if (segment.sub) props = inserirRunProp(props, '<w:vertAlign w:val="subscript"/>');
+      return props;
     }
   }
 
   if (segment.bold) props = inserirRunProp(props, '<w:b/><w:bCs/>');
   if (segment.italic) props = inserirRunProp(props, '<w:i/><w:iCs/>');
-  if (!segment.bold && !segment.italic) {
+  if (segment.sup) aplicarSobrescrito();
+  if (segment.sub) props = inserirRunProp(props, '<w:vertAlign w:val="subscript"/>');
+  if (!segment.bold && !segment.italic && !segment.sup && !segment.sub) {
     props = props === '<w:rPr></w:rPr>' ? '' : props;
   }
   return props;
@@ -343,14 +370,16 @@ function segmentosHtml(html) {
   const segments = [];
   let bold = false;
   let italic = false;
+  let sup = false;
+  let sub = false;
   let cursor = 0;
-  const re = /<(\/?)(strong|b|em|i|br)\b[^>]*>/gi;
+  const re = /<(\/?)(strong|b|em|i|sup|sub|br)\b[^>]*>/gi;
   let match;
 
   function pushText(value) {
     const text = decodeXml(value);
     if (!text) return;
-    segments.push({ text, bold, italic });
+    segments.push({ text, bold, italic, sup, sub });
   }
 
   while ((match = re.exec(String(html || '')))) {
@@ -363,6 +392,10 @@ function segmentosHtml(html) {
       bold = !closing;
     } else if (tag === 'em' || tag === 'i') {
       italic = !closing;
+    } else if (tag === 'sup') {
+      sup = !closing;
+    } else if (tag === 'sub') {
+      sub = !closing;
     }
     cursor = re.lastIndex;
   }
@@ -390,6 +423,76 @@ function extrairRuns(paragraphXml) {
 
 function textoParagrafoXml(paragraphXml) {
   return extrairRuns(paragraphXml).map(run => run.text).join('');
+}
+
+function runEhSobrescrito(run, charStyles) {
+  const rPr = String(run?.rPr || '');
+  if (/<w:vertAlign\b[^>]*\bw:val="superscript"/i.test(rPr)) return true;
+  const styleId = (rPr.match(/<w:rStyle\b[^>]*\bw:val="([^"]+)"/i) || [])[1] || '';
+  return !!styleId && !!charStyles?.superscript && decodeXml(styleId) === charStyles.superscript;
+}
+
+function textoAntesTerminaComIndicadorNumero(text) {
+  return /(?:^|[\s([{/"'“‘])n$/i.test(String(text || '').replace(/\s+$/g, ''));
+}
+
+function acrescentarTextoAoUltimoRunXml(runXml, text) {
+  const encoded = encodeXml(text);
+  const matches = Array.from(String(runXml || '').matchAll(/<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/g));
+  const last = matches[matches.length - 1];
+  if (!last) return runXml;
+  const start = last.index;
+  const original = last[0];
+  const attrs = last[1] || '';
+  const value = last[2] || '';
+  const novoText = `<w:t${attrs}>${value}${encoded}</w:t>`;
+  return `${runXml.slice(0, start)}${novoText}${runXml.slice(start + original.length)}`;
+}
+
+function normalizarIndicadoresNumeroSobrescritoParagrafo(paragraphXml, charStyles) {
+  const runs = extrairRuns(paragraphXml);
+  if (!runs.length) return { xml: paragraphXml, alteracoes: 0 };
+
+  const pieces = [];
+  let cursor = 0;
+  let textoAcumulado = '';
+  let alteracoes = 0;
+
+  runs.forEach(run => {
+    pieces.push(paragraphXml.slice(cursor, run.offset));
+    const text = String(run.text || '');
+    const ehNumeroSobrescrito = /^[oº]$/i.test(text.trim())
+      && runEhSobrescrito(run, charStyles)
+      && textoAntesTerminaComIndicadorNumero(textoAcumulado);
+
+    if (ehNumeroSobrescrito) {
+      for (let i = pieces.length - 1; i >= 0; i -= 1) {
+        if (/<w:r\b/i.test(pieces[i])) {
+          pieces[i] = acrescentarTextoAoUltimoRunXml(pieces[i], 'º');
+          break;
+        }
+      }
+      textoAcumulado += 'º';
+      alteracoes += 1;
+    } else {
+      pieces.push(run.xml);
+      textoAcumulado += text;
+    }
+    cursor = run.offset + run.xml.length;
+  });
+
+  pieces.push(paragraphXml.slice(cursor));
+  return { xml: alteracoes ? pieces.join('') : paragraphXml, alteracoes };
+}
+
+function normalizarIndicadoresNumeroSobrescritoDocumentXml(documentXml, charStyles) {
+  let total = 0;
+  const xml = String(documentXml || '').replace(/<w:p\b[\s\S]*?<\/w:p>/g, paragraphXml => {
+    const resultado = normalizarIndicadoresNumeroSobrescritoParagrafo(paragraphXml, charStyles);
+    total += resultado.alteracoes;
+    return resultado.xml;
+  });
+  return { xml, total };
 }
 
 function substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles, revision) {
@@ -530,7 +633,7 @@ function inserirComentarioEmParagrafo(paragraphXml, alvo, commentId, charStyles)
   return opened && closed ? pieces.join('') : null;
 }
 
-function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles) {
+function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles, autorPadrao = 'ABeNiTa') {
   const aplicadas = [];
   const ignoradas = [];
   let xml = documentXml;
@@ -557,7 +660,7 @@ function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles) {
           return paragraphXml;
         }
         const revision = {
-          author: correcao.autor || 'ABeNiTa',
+          author: correcao.autor || autorPadrao || 'ABeNiTa',
           date: revisionDate,
           deleteId: revisionId,
           insertId: revisionId + 1
@@ -631,7 +734,7 @@ function garantirCommentsRel(relsXml) {
   return relsXml.replace(/<\/Relationships>\s*$/, `${rel}</Relationships>`);
 }
 
-function aplicarComentariosDocumentXml(documentXml, comentarios, startId, charStyles) {
+function aplicarComentariosDocumentXml(documentXml, comentarios, startId, charStyles, autorPadrao = 'ABeNiTa') {
   const inseridos = [];
   const ignorados = [];
   let xml = documentXml;
@@ -667,7 +770,7 @@ function aplicarComentariosDocumentXml(documentXml, comentarios, startId, charSt
     if (!substituiu) substituiu = tentarInserir(false);
 
     if (substituiu) {
-      inseridos.push({ ...comentario, commentId });
+      inseridos.push({ ...comentario, autor: comentario.autor || autorPadrao || 'ABeNiTa', commentId });
       nextId += 1;
     } else {
       ignorados.push({ index, alvo, motivo: 'Texto alvo do comentÃ¡rio nÃ£o encontrado no DOCX.' });
@@ -699,10 +802,7 @@ ipcMain.handle('refs:extrairEstruturaDocx', async (event, payload) => {
 ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
   const correcoes = Array.isArray(payload?.correcoes) ? payload.correcoes : [];
   const comentarios = Array.isArray(payload?.comentarios) ? payload.comentarios : [];
-  if (!correcoes.length && !comentarios.length) {
-    return { ok: false, erro: 'Não há correções ou comentários para aplicar.' };
-  }
-
+  const autorAlteracoes = String(payload?.autorAlteracoes || '').trim() || 'ABeNiTa';
   const arrayBuffer = payload?.arrayBuffer;
   if (!arrayBuffer) {
     return { ok: false, erro: 'O DOCX original não está carregado.' };
@@ -728,14 +828,15 @@ ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
     ? await zip.file('word/styles.xml').async('string')
     : '';
   const charStyles = localizarEstilosCaracter(stylesXml);
-  const resultado = aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles);
+  const normalizacaoNumero = normalizarIndicadoresNumeroSobrescritoDocumentXml(documentXml, charStyles);
+  const resultado = aplicarCorrecoesDocumentXml(normalizacaoNumero.xml, correcoes, charStyles, autorAlteracoes);
   let documentXmlFinal = resultado.xml;
 
   let comentariosResultado = { inseridos: [], ignorados: [] };
   if (comentarios.length) {
     const commentsFile = zip.file('word/comments.xml');
     const commentsXml = commentsFile ? await commentsFile.async('string') : criarCommentsXml();
-    comentariosResultado = aplicarComentariosDocumentXml(documentXmlFinal, comentarios, maxCommentId(commentsXml) + 1, charStyles);
+    comentariosResultado = aplicarComentariosDocumentXml(documentXmlFinal, comentarios, maxCommentId(commentsXml) + 1, charStyles, autorAlteracoes);
     documentXmlFinal = comentariosResultado.xml;
     if (comentariosResultado.inseridos.length) {
       zip.file('word/comments.xml', adicionarComentariosXml(commentsXml, comentariosResultado.inseridos));
@@ -748,6 +849,10 @@ ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
       const contentTypesXml = await zip.file(contentTypesPath).async('string');
       zip.file(contentTypesPath, garantirCommentsContentType(contentTypesXml));
     }
+  }
+
+  if (!normalizacaoNumero.total && !resultado.aplicadas.length && !comentariosResultado.inseridos.length) {
+    return { ok: false, erro: 'Não há correções, comentários ou normalizações automáticas para aplicar.' };
   }
 
   zip.file('word/document.xml', documentXmlFinal);
@@ -764,6 +869,7 @@ ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
     ok: true,
     filePath,
     aplicadas: resultado.aplicadas.length,
+    normalizacoesAutomaticas: normalizacaoNumero.total,
     comentariosInseridos: comentariosResultado.inseridos.length,
     estilosCaracter: charStyles,
     ignoradas: resultado.ignoradas.concat(comentariosResultado.ignorados || [])
