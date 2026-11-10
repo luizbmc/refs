@@ -257,6 +257,11 @@ button:disabled,
   border-color: #5c98b7;
 }
 
+.filter.footnote {
+  background: #f3d7a6;
+  border-color: #b7791f;
+}
+
 .filter.active {
   color: var(--ink);
   border-color: #18383d;
@@ -294,6 +299,7 @@ button:disabled,
 .occurrence.authorless { border-left-color: #c77d2c; }
 .occurrence.missing { border-left-color: #d76f66; }
 .occurrence.format { border-left-color: #5c98b7; }
+.occurrence.footnote { border-left-color: #b7791f; }
 .occurrence.active { outline: 2px solid var(--active); }
 
 .occurrence strong {
@@ -546,6 +552,83 @@ button:disabled,
   border-color: var(--accent);
 }
 
+.recovery-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  color: var(--text, #222);
+}
+
+.recovery-offer span {
+  flex: 1 1 320px;
+}
+
+.registered-comments {
+  margin-bottom: 12px;
+  font: 13px/1.4 "Segoe UI", Arial, sans-serif;
+  color: var(--ink);
+}
+
+.registered-comments > strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.registered-comments ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.registered-comment {
+  border: 1px solid #e3d9a6;
+  border-left: 4px solid #d9b83a;
+  border-radius: 6px;
+  background: #fffbe8;
+  padding: 7px 10px;
+}
+
+.registered-comments.neighbors .registered-comment {
+  border-color: #dde1ea;
+  border-left-color: #a9b3c6;
+  background: #f6f7fa;
+}
+
+.registered-comment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.registered-comment-head span {
+  color: var(--muted);
+}
+
+.registered-comment-head button {
+  margin-left: auto;
+}
+
+.registered-comment p {
+  margin: 4px 0 2px;
+  white-space: pre-wrap;
+}
+
+.registered-comment-target {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.occurrence-comment-badge {
+  font-weight: 400;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .editor {
   width: min(820px, 100%);
   min-height: calc(100vh - 136px);
@@ -634,13 +717,20 @@ button:disabled,
 .ref-mark.warning { background: var(--warning); }
 .ref-mark.authorless { background: var(--authorless); }
 .ref-mark.missing { background: var(--missing); }
+.ref-footnote {
+  background: #f3d7a6;
+  border-radius: 3px;
+  padding: 0 1px;
+  cursor: pointer;
+}
 .ref-format {
   background: var(--format);
   border-radius: 3px;
   cursor: pointer;
 }
 .ref-mark.active,
-.ref-format.active {
+.ref-format.active,
+.ref-footnote.active {
   background: var(--active);
   outline: 1px solid #9d7f00;
 }

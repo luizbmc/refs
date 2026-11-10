@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, net, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, net, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -27,7 +27,76 @@ function createWindow() {
     }
   });
 
+  protegerNavegacao(win);
   win.loadFile(path.join(__dirname, '..', 'app', 'index.html'));
+}
+
+// Links (do texto importado, do painel de URLs etc.) nunca abrem dentro do app: a janela trocaria a
+// página do ABeNiTa pelo site e o trabalho em memória se perderia. Vão para o navegador padrão.
+function abrirNoNavegador(url) {
+  if (/^(https?:|mailto:)/i.test(String(url || ''))) {
+    shell.openExternal(url).catch(err => console.warn('Não foi possível abrir o link:', url, err));
+  }
+}
+
+function semFragmento(url) {
+  return String(url || '').split('#')[0];
+}
+
+function protegerNavegacao(win) {
+  const wc = win.webContents;
+  wc.setWindowOpenHandler(({ url }) => {
+    abrirNoNavegador(url);
+    return { action: 'deny' };
+  });
+  wc.on('will-navigate', (event, url) => {
+    // âncoras da própria página (notas de rodapé) continuam funcionando
+    if (semFragmento(url) === semFragmento(wc.getURL())) return;
+    event.preventDefault();
+    abrirNoNavegador(url);
+  });
+  wc.on('will-redirect', (event, url) => {
+    if (semFragmento(url) === semFragmento(wc.getURL())) return;
+    event.preventDefault();
+  });
+
+  // fechar com trabalho que não foi salvo em arquivo: pergunta antes (a recuperação automática
+  // existe, mas o usuário pode não saber dela)
+  let podeFechar = false;
+  win.on('close', async event => {
+    if (podeFechar) return;
+    let pendente = false;
+    try {
+      event.preventDefault();
+      // página travada não pode impedir o fechamento
+      pendente = await Promise.race([
+        // grava o que estiver pendente; só pergunta se o trabalho ainda não tem arquivo
+        wc.executeJavaScript('typeof descarregarAutosalvamento === "function" && descarregarAutosalvamento()', true),
+        new Promise(resolve => setTimeout(() => resolve(false), 5000)),
+      ]);
+    } catch (err) {
+      pendente = false;
+    }
+    if (pendente) {
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'warning',
+        title: 'ABeNiTa',
+        message: 'Há alterações que não foram salvas em arquivo.',
+        detail: 'Use "Salvar trabalho" para guardá-las num arquivo .abenita. Se fechar agora, uma cópia automática será oferecida na próxima vez que o ABeNiTa abrir.',
+        buttons: ['Salvar trabalho', 'Fechar mesmo assim', 'Cancelar'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
+      });
+      if (response === 2) return;
+      if (response === 0) {
+        const salvou = await wc.executeJavaScript('salvarTrabalho().then(() => !haTrabalhoNaoSalvo())', true).catch(() => false);
+        if (!salvou) return;
+      }
+    }
+    podeFechar = true;
+    win.close();
+  });
 }
 
 function requestUrl(url, method, redirects, originalUrl, wasRedirected) {
@@ -212,6 +281,21 @@ function normalizarBusca(text) {
     .trim();
 }
 
+function normalizarTextoComparacao(text) {
+  return normalizarBusca(text)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[“”‘’"']/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function escapeRegExp(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function normalizarNomeEstilo(text) {
   return decodeXml(text)
     .normalize('NFD')
@@ -250,9 +334,22 @@ function textoRun(runXml) {
   return parts.join('');
 }
 
+// O <w:rPr> do run pode conter <w:rPrChange> (formatação alterada com controle de alterações), que
+// tem o seu próprio <w:rPr> dentro: a captura precisa engolir o rPrChange inteiro para chegar ao
+// </w:rPr> externo.
 function extrairRunProps(runXml) {
-  const match = runXml.match(/<w:rPr\b[\s\S]*?<\/w:rPr>/);
+  const match = runXml.match(/<w:rPr\b[^>]*\/>|<w:rPr\b[^>]*>(?:<w:rPrChange\b[\s\S]*?<\/w:rPrChange>|[\s\S])*?<\/w:rPr>/);
   return match ? match[0] : '';
+}
+
+// Separa o <w:rPrChange> das propriedades atuais do run.
+function separarRPrChange(rPr) {
+  let change = '';
+  const props = String(rPr || '').replace(/<w:rPrChange\b[\s\S]*?<\/w:rPrChange>/, m => {
+    change = m;
+    return '';
+  });
+  return { props, change };
 }
 
 function removerPropsNegritoItalico(rPr) {
@@ -280,6 +377,11 @@ function inserirRunProp(rPr, xmlProp) {
 
 function aplicarPropsNegritoItalico(rPr, segment, charStyles) {
   if (!segment) return rPr || '';
+  // texto novo (inserido): leva a formatação atual, sem o histórico de formatação do run original
+  return aplicarPropsSemRPrChange(separarRPrChange(rPr).props, segment, charStyles);
+}
+
+function aplicarPropsSemRPrChange(rPr, segment, charStyles) {
   let props = removerRunStyle(removerPropsNegritoItalico(rPr));
   const hasBoldStyle = !!charStyles?.bold;
   const hasItalicStyle = !!charStyles?.italic;
@@ -633,6 +735,195 @@ function inserirComentarioEmParagrafo(paragraphXml, alvo, commentId, charStyles)
   return opened && closed ? pieces.join('') : null;
 }
 
+function idNotaWord(footnoteId) {
+  const match = String(footnoteId || '').match(/(\d+)$/);
+  return match ? match[0] : String(footnoteId || '').trim();
+}
+
+function criarRunsHtml(html, baseRPr, charStyles) {
+  return segmentosHtml(html).map(segment => (
+    criarRun(segment.text, baseRPr || '', segment, charStyles)
+  )).join('');
+}
+
+// Como no rPr: o <w:pPrChange> tem um <w:pPr> próprio dentro. O parágrafo criado a partir deste
+// é novo, então não herda o histórico de formatação (pPrChange) do original.
+function extrairPPr(paragraphXml) {
+  const pPr = (String(paragraphXml || '').match(/<w:pPr\b[^>]*\/>|<w:pPr\b[^>]*>(?:<w:pPrChange\b[\s\S]*?<\/w:pPrChange>|[\s\S])*?<\/w:pPr>/) || [])[0] || '';
+  return pPr.replace(/<w:pPrChange\b[\s\S]*?<\/w:pPrChange>/, '');
+}
+
+function criarParagrafoReferencia(referenceHtml, basePPr, charStyles, revision) {
+  const runs = criarRunsHtml(referenceHtml, '', charStyles);
+  const conteudo = revision ? wrapInsertion(runs, revision) : runs;
+  return `<w:p>${basePPr || ''}${conteudo}</w:p>`;
+}
+
+function paragrafosComOffset(documentXml) {
+  return Array.from(String(documentXml || '').matchAll(/<w:p\b[\s\S]*?<\/w:p>/g))
+    .map(match => ({
+      xml: match[0],
+      offset: match.index || 0,
+      text: textoParagrafoXml(match[0]),
+    }));
+}
+
+function pareceTituloReferenciasXml(text) {
+  const normal = normalizarTextoComparacao(text)
+    .replace(/^\d+(?:\s+\d+|\.\d+)*\s+/, '');
+  return /^(REFERENCIAS|REFER NCIAS|REFERENCIAS BIBLIOGRAFICAS|REFER NCIAS BIBLIOGRAFICAS|BIBLIOGRAFIA|REFERENCES)$/.test(normal);
+}
+
+function autoriaSubstituidaPorLinhaXml(text) {
+  return /^_{3,}\.?\s+/.test(String(text || '').trim());
+}
+
+function pareceInicioReferenciaXml(text) {
+  const t = normalizarBusca(text);
+  if (!t) return false;
+  if (autoriaSubstituidaPorLinhaXml(t)) return true;
+  if (/^[A-ZÀ-Þ][A-ZÀ-Þ\s.'’-]+,\s+[A-ZÀ-Þ]/.test(t)) return true;
+  if (/^[A-ZÀ-Þ][A-ZÀ-Þ\s.'’-]{2,}\.\s+/.test(t)) return true;
+  if (/^[A-ZÀ-Þ][A-ZÀ-Þ0-9\s.'’()&-]{2,}\.\s+/.test(t)) return true;
+  if (/^[A-ZÀ-Þ][A-Za-zÀ-ÿ.'’-]+,\s+[A-ZÀ-Þ]/.test(t)) return true;
+  const institucional = t.match(/^([A-ZÀ-Þ][A-Za-zÀ-ÿ0-9\s'’()&-]{2,80})\.\s+(.+)/);
+  if (!institucional) return false;
+  const autor = normalizarBusca(institucional[1]);
+  const resto = institucional[2];
+  const palavras = autor.split(/\s+/).filter(Boolean);
+  const termoProibido = /^(Disponível|Disponivel|Acesso|In|Revista|Editora|Tese|Dissertação|Dissertacao|Doutorado|Mestrado)\b/i;
+  return palavras.length <= 8
+    && !/[,:;]/.test(autor)
+    && !termoProibido.test(autor)
+    && /(?:\b(?:18|19|20)\d{2}[a-z]?\b|Dispon[ií]vel\s+em|Acesso\s+em)/i.test(resto);
+}
+
+function encontrarOffsetNota(documentXml, footnoteId) {
+  const id = escapeRegExp(idNotaWord(footnoteId));
+  if (!id) return -1;
+  const re = new RegExp(`<w:p\\b(?:(?!</w:p>)[\\s\\S])*?<w:footnoteReference\\b[^>]*\\bw:id="${id}"[^>]*/>(?:(?!</w:p>)[\\s\\S])*?</w:p>`, 'i');
+  const match = String(documentXml || '').match(re);
+  return match && typeof match.index === 'number' ? match.index : -1;
+}
+
+function substituirReferenciaNotaPorCitacao(documentXml, correcao, charStyles, revision) {
+  const id = escapeRegExp(idNotaWord(correcao.footnoteId));
+  const citacaoHtml = correcao.citacaoHtml || correcao.depoisHtml || correcao.citacao || correcao.depois || '';
+  if (!id || !normalizarBusca(citacaoHtml)) return { xml: documentXml, ok: false };
+
+  const runRe = new RegExp(`<w:r\\b(?:(?!</w:r>)[\\s\\S])*?<w:footnoteReference\\b[^>]*\\bw:id="${id}"[^>]*/>(?:(?!</w:r>)[\\s\\S])*?</w:r>`, 'i');
+  let substituiu = false;
+  const xml = String(documentXml || '').replace(runRe, runXml => {
+    if (substituiu) return runXml;
+    substituiu = true;
+    const baseRPr = extrairRunProps(runXml);
+    const runs = criarRunsHtml(` ${citacaoHtml}`, baseRPr, charStyles);
+    return revision ? wrapInsertion(runs, revision) : runs;
+  });
+  return { xml, ok: substituiu };
+}
+
+function inserirReferenciaOrdenada(documentXml, referenceHtml, charStyles, revision, offsetOrigem) {
+  const textoReferencia = normalizarBusca(segmentosHtml(referenceHtml).map(seg => seg.text).join(''));
+  if (!textoReferencia) return { xml: documentXml, ok: false };
+
+  const paragrafos = paragrafosComOffset(documentXml);
+  const headings = paragrafos
+    .map((p, index) => ({ ...p, index }))
+    .filter(p => pareceTituloReferenciasXml(p.text));
+  if (!headings.length) {
+    const novo = criarParagrafoReferencia(referenceHtml, '', charStyles, revision);
+    return {
+      xml: String(documentXml || '').replace(/<\/w:body>/i, `${novo}</w:body>`),
+      ok: true,
+    };
+  }
+
+  const heading = headings.find(h => h.offset > offsetOrigem) || headings[headings.length - 1];
+  const candidatos = [];
+  for (let i = heading.index + 1; i < paragrafos.length; i += 1) {
+    const p = paragrafos[i];
+    const text = normalizarBusca(p.text);
+    if (!text) continue;
+    if (pareceTituloReferenciasXml(text)) break;
+    if (!pareceInicioReferenciaXml(text) && candidatos.length) break;
+    if (!pareceInicioReferenciaXml(text) && !candidatos.length) continue;
+    candidatos.push({ ...p, index: i });
+  }
+
+  const comparador = textoReferencia.localeCompare.bind(textoReferencia);
+  let antesDe = null;
+  for (const candidato of candidatos) {
+    if (comparador(normalizarBusca(candidato.text), 'pt-BR', { sensitivity: 'base' }) < 0) {
+      antesDe = candidato;
+      break;
+    }
+  }
+
+  const base = antesDe || candidatos[candidatos.length - 1] || paragrafos[heading.index + 1] || heading;
+  const novo = criarParagrafoReferencia(referenceHtml, extrairPPr(base.xml), charStyles, revision);
+  if (antesDe) {
+    return {
+      xml: documentXml.slice(0, antesDe.offset) + novo + documentXml.slice(antesDe.offset),
+      ok: true,
+    };
+  }
+
+  const insertAt = base.offset + base.xml.length;
+  return {
+    xml: documentXml.slice(0, insertAt) + novo + documentXml.slice(insertAt),
+    ok: true,
+  };
+}
+
+function aplicarCorrecoesNotasReferenciaDocumentXml(documentXml, correcoesNotas, charStyles, autorPadrao = 'ABeNiTa') {
+  const aplicadas = [];
+  const ignoradas = [];
+  let xml = documentXml;
+  let revisionId = maxRevisionId(xml) + 1;
+  const revisionDate = new Date().toISOString();
+
+  (correcoesNotas || []).forEach((correcao, index) => {
+    const citation = correcao.citacaoHtml || correcao.depoisHtml || correcao.citacao || correcao.depois || '';
+    const reference = correcao.referenciaHtml || correcao.referencia || correcao.antes || '';
+    if (!correcao.footnoteId || !normalizarBusca(citation) || !normalizarBusca(reference)) {
+      ignoradas.push({ index, motivo: 'Correção de nota incompleta.' });
+      return;
+    }
+
+    const offsetOrigem = encontrarOffsetNota(xml, correcao.footnoteId);
+    const revision = {
+      author: correcao.autor || autorPadrao || 'ABeNiTa',
+      date: revisionDate,
+      deleteId: revisionId,
+      insertId: revisionId + 1,
+    };
+    const substituida = substituirReferenciaNotaPorCitacao(xml, correcao, charStyles, revision);
+    if (!substituida.ok) {
+      ignoradas.push({ index, motivo: `Chamada da nota ${correcao.footnoteId} não encontrada no DOCX.` });
+      return;
+    }
+
+    revisionId += 2;
+    const inserida = inserirReferenciaOrdenada(substituida.xml, reference, charStyles, {
+      author: revision.author,
+      date: revision.date,
+      deleteId: revisionId,
+      insertId: revisionId + 1,
+    }, offsetOrigem);
+    if (!inserida.ok) {
+      ignoradas.push({ index, motivo: 'Não foi possível inserir a referência na lista final.' });
+      return;
+    }
+
+    revisionId += 2;
+    xml = inserida.xml;
+    aplicadas.push({ index, footnoteId: correcao.footnoteId, depois: correcao.citacao || correcao.depois });
+  });
+
+  return { xml, aplicadas, ignoradas };
+}
+
 function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles, autorPadrao = 'ABeNiTa') {
   const aplicadas = [];
   const ignoradas = [];
@@ -780,6 +1071,104 @@ function aplicarComentariosDocumentXml(documentXml, comentarios, startId, charSt
   return { xml, inseridos, ignorados, nextId };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Trabalho em andamento (.abenita): JSON com o DOCX original (base64), o texto do editor com as
+// correções já aplicadas e as listas de correções/comentários. Serve para "Salvar trabalho" e
+// para a recuperação automática (cópia gravada a cada correção na pasta de dados do app).
+
+const FORMATO_TRABALHO = 'abenita-trabalho';
+const caminhoRecuperacao = () => path.join(app.getPath('userData'), 'recuperacao.abenita');
+
+function serializarTrabalho(estado) {
+  const { docxArrayBuffer, ...resto } = estado || {};
+  if (!docxArrayBuffer) throw new Error('O DOCX original não está carregado.');
+  return JSON.stringify({
+    formato: FORMATO_TRABALHO,
+    versao: 1,
+    salvoEm: new Date().toISOString(),
+    ...resto,
+    docxBase64: Buffer.from(docxArrayBuffer).toString('base64'),
+  });
+}
+
+function lerTrabalho(texto) {
+  const dados = JSON.parse(texto);
+  if (dados?.formato !== FORMATO_TRABALHO || !dados.docxBase64) {
+    throw new Error('O arquivo não é um trabalho do ABeNiTa.');
+  }
+  const { docxBase64, ...resto } = dados;
+  return { ...resto, docxArrayBuffer: new Uint8Array(Buffer.from(docxBase64, 'base64')) };
+}
+
+// grava num temporário e troca, para um travamento no meio não estragar o arquivo anterior
+async function gravarComSeguranca(destino, conteudo) {
+  const temporario = `${destino}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+  await fs.promises.writeFile(temporario, conteudo, 'utf8');
+  await fs.promises.rename(temporario, destino);
+}
+
+ipcMain.handle('refs:salvarTrabalho', async (event, payload) => {
+  try {
+    let filePath = payload?.filePath || '';
+    if (!filePath || payload?.escolherLocal) {
+      const nome = String(payload?.estado?.docxNome || 'trabalho').replace(/\.docx$/i, '');
+      // sugestão: ao lado do DOCX original, quando se sabe onde ele está
+      const pasta = payload?.pastaPadrao && fs.existsSync(payload.pastaPadrao) ? payload.pastaPadrao : '';
+      const escolha = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+        title: payload?.titulo || 'Salvar trabalho do ABeNiTa',
+        defaultPath: filePath || (pasta ? path.join(pasta, `${nome}.abenita`) : `${nome}.abenita`),
+        filters: [{ name: 'Trabalho do ABeNiTa', extensions: ['abenita'] }],
+      });
+      if (escolha.canceled || !escolha.filePath) return { ok: false, cancelado: true };
+      filePath = escolha.filePath;
+    }
+    await gravarComSeguranca(filePath, serializarTrabalho(payload?.estado));
+    return { ok: true, filePath };
+  } catch (err) {
+    return { ok: false, erro: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('refs:abrirTrabalho', async event => {
+  try {
+    const escolha = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: 'Abrir trabalho do ABeNiTa',
+      properties: ['openFile'],
+      filters: [{ name: 'Trabalho do ABeNiTa', extensions: ['abenita'] }],
+    });
+    if (escolha.canceled || !escolha.filePaths?.length) return { ok: false, cancelado: true };
+    const filePath = escolha.filePaths[0];
+    const estado = lerTrabalho(await fs.promises.readFile(filePath, 'utf8'));
+    return { ok: true, filePath, estado };
+  } catch (err) {
+    return { ok: false, erro: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('refs:autosalvarTrabalho', async (event, estado) => {
+  try {
+    await gravarComSeguranca(caminhoRecuperacao(), serializarTrabalho(estado));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, erro: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('refs:lerRecuperacao', async () => {
+  try {
+    const texto = await fs.promises.readFile(caminhoRecuperacao(), 'utf8');
+    return { ok: true, estado: lerTrabalho(texto) };
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { ok: false, vazio: true };
+    return { ok: false, erro: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('refs:descartarRecuperacao', async () => {
+  await fs.promises.rm(caminhoRecuperacao(), { force: true });
+  return { ok: true };
+});
+
 ipcMain.handle('refs:validarUrls', async (event, urls) => {
   const lista = Array.isArray(urls) ? urls : [];
   const resultados = [];
@@ -801,6 +1190,8 @@ ipcMain.handle('refs:extrairEstruturaDocx', async (event, payload) => {
 
 ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
   const correcoes = Array.isArray(payload?.correcoes) ? payload.correcoes : [];
+  const correcoesNotasReferencia = correcoes.filter(correcao => correcao?.tipo === 'nota-referencia');
+  const correcoesTexto = correcoes.filter(correcao => correcao?.tipo !== 'nota-referencia');
   const comentarios = Array.isArray(payload?.comentarios) ? payload.comentarios : [];
   const autorAlteracoes = String(payload?.autorAlteracoes || '').trim() || 'ABeNiTa';
   const arrayBuffer = payload?.arrayBuffer;
@@ -829,8 +1220,9 @@ ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
     : '';
   const charStyles = localizarEstilosCaracter(stylesXml);
   const normalizacaoNumero = normalizarIndicadoresNumeroSobrescritoDocumentXml(documentXml, charStyles);
-  const resultado = aplicarCorrecoesDocumentXml(normalizacaoNumero.xml, correcoes, charStyles, autorAlteracoes);
-  let documentXmlFinal = resultado.xml;
+  const resultado = aplicarCorrecoesDocumentXml(normalizacaoNumero.xml, correcoesTexto, charStyles, autorAlteracoes);
+  const resultadoNotas = aplicarCorrecoesNotasReferenciaDocumentXml(resultado.xml, correcoesNotasReferencia, charStyles, autorAlteracoes);
+  let documentXmlFinal = resultadoNotas.xml;
 
   let comentariosResultado = { inseridos: [], ignorados: [] };
   if (comentarios.length) {
@@ -851,12 +1243,12 @@ ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
     }
   }
 
-  if (!normalizacaoNumero.total && !resultado.aplicadas.length && !comentariosResultado.inseridos.length) {
+  if (!normalizacaoNumero.total && !resultado.aplicadas.length && !resultadoNotas.aplicadas.length && !comentariosResultado.inseridos.length) {
     return { ok: false, erro: 'Não há correções, comentários ou normalizações automáticas para aplicar.' };
   }
 
   zip.file('word/document.xml', documentXmlFinal);
-  if (resultado.aplicadas.length) {
+  if (resultado.aplicadas.length || resultadoNotas.aplicadas.length) {
     const settingsPath = 'word/settings.xml';
     const settingsXml = zip.file(settingsPath)
       ? await zip.file(settingsPath).async('string')
@@ -868,11 +1260,11 @@ ipcMain.handle('refs:exportarDocxCorrigido', async (event, payload) => {
   return {
     ok: true,
     filePath,
-    aplicadas: resultado.aplicadas.length,
+    aplicadas: resultado.aplicadas.length + resultadoNotas.aplicadas.length,
     normalizacoesAutomaticas: normalizacaoNumero.total,
     comentariosInseridos: comentariosResultado.inseridos.length,
     estilosCaracter: charStyles,
-    ignoradas: resultado.ignoradas.concat(comentariosResultado.ignorados || [])
+    ignoradas: resultado.ignoradas.concat(resultadoNotas.ignoradas || [], comentariosResultado.ignorados || [])
   };
 });
 app.whenReady().then(() => {

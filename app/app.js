@@ -20,6 +20,8 @@ const referencesListEl = document.getElementById('referencesList')
 const referencesCountEl = document.getElementById('referencesCount')
 const validateUrlsBtn = document.getElementById('validateUrlsBtn')
 const exportCorrectedBtn = document.getElementById('exportCorrectedBtn')
+const openWorkBtn = document.getElementById('openWorkBtn')
+const saveWorkBtn = document.getElementById('saveWorkBtn')
 const textSearchInput = document.getElementById('textSearchInput')
 const textSearchCaseBtn = document.getElementById('textSearchCaseBtn')
 const textSearchPrevBtn = document.getElementById('textSearchPrevBtn')
@@ -51,6 +53,8 @@ let normalizacoesAutomaticasDocx = 0
 let comentarioAutorPadrao = ''
 let importedDocxArrayBuffer = null
 let importedDocxName = ''
+let importedDocxPasta = ''
+let pediuLocalDoTrabalho = false
 let buscaTextoDiferenciarCaixa = false
 let buscaTextoMatches = []
 let buscaTextoIndiceAtivo = -1
@@ -61,6 +65,12 @@ let docxParagraphMeta = []
 let chapterScopes = []
 let activeChapterIndex = -1
 let pendingChapterSetup = null
+let capituloEstiloAtual = ''
+let trabalhoCaminho = ''
+let trabalhoAssinaturaSalva = ''
+let autosalvamentoTimer = null
+let autosalvamentoFila = Promise.resolve()
+let autosalvamentoUltimo = null
 let ajudaAbntModoEdicao = false
 let ajudaAbntTipoAtivo = ''
 
@@ -697,6 +707,11 @@ function stripMarks() {
     delete el.dataset.occurrenceId
     el.removeAttribute('title')
   })
+  editor.querySelectorAll('.ref-footnote').forEach(el => {
+    el.classList.remove('ref-footnote', 'active')
+    delete el.dataset.occurrenceId
+    el.removeAttribute('title')
+  })
   editor.querySelectorAll('.ref-list-entry').forEach(el => {
     el.classList.remove('ref-list-entry', 'active')
     delete el.dataset.refIndex
@@ -721,6 +736,8 @@ function atualizarEstadoExportacao() {
   exportCorrectedBtn.title = pronto
     ? 'Baixar uma cópia do DOCX com as correções, comentários e normalizações automáticas.'
     : 'Importe um DOCX e valide ao menos uma correção ou comentário para habilitar.'
+  if (saveWorkBtn) saveWorkBtn.disabled = !importedDocxArrayBuffer
+  agendarAutosalvamento()
 }
 
 function limparCorrecoesAplicadas() {
@@ -969,6 +986,104 @@ function montarReferencias(referenceBlocks) {
         : normalizarTexto(ref.text.split('.')[0] || ref.text),
     }
   })
+}
+
+function limparTextoNotaMammoth(text) {
+  return normalizarEspacos(String(text || '')
+    .replace(/↑\s*$/g, '')
+    .replace(/^\s*\d+\s+/, ''))
+}
+
+function idBlocoNotaMammoth(el) {
+  const container = el?.closest?.('[id*="footnote"], [id*="endnote"]')
+  const id = container?.id || el?.id || ''
+  if (id) return id
+  const back = el?.querySelector?.('a[href*="footnote-ref"], a[href*="endnote-ref"]')
+  const href = back?.getAttribute?.('href') || ''
+  const ref = href.replace(/^#/, '')
+  return ref ? ref.replace(/-ref-?/, '-') : ''
+}
+
+function numeroNotaMammoth(footnoteId, text) {
+  const idNum = String(footnoteId || '').match(/(\d+)$/)?.[1]
+  if (idNum) return idNum
+  return String(text || '').match(/^\s*(\d+)/)?.[1] || ''
+}
+
+function localizarChamadaNotaMammoth(footnoteId) {
+  if (!footnoteId) return null
+  const candidatos = Array.from(editor.querySelectorAll('a[href]'))
+  const alvo = `#${footnoteId}`
+  const anchor = candidatos.find(a => (a.getAttribute('href') || '') === alvo)
+    || candidatos.find(a => (a.getAttribute('href') || '').endsWith(alvo))
+  return anchor?.closest?.('sup') || anchor || null
+}
+
+function pareceReferenciaEmNota(text) {
+  const t = normalizarEspacos(text)
+  if (!t || t.length < 35) return false
+  if (pareceInicioReferencia(t)) return true
+  const temAno = /\b(?:18|19|20)\d{2}[a-z]?\b/i.test(t)
+  const temMarcadorBibliografico = /\b(?:in|apud|orgs?\.?|coord\.?|ed\.|editora|tipografia|universidade|senado|c[aâ]mara|cole[cç][aã]o|hist[oó]ria|tomo|vol\.?|p[aá]g(?:s)?\.?|p\.)\b/i.test(t)
+  const temLocalEditoraAno = /(?:Rio de Janeiro|S[aã]o Paulo|Bras[ií]lia|Belo Horizonte|Lisboa|Coimbra)\s*[:/]/i.test(t)
+  return temAno && (temMarcadorBibliografico || temLocalEditoraAno)
+}
+
+function idsNotasReferenciaCorrigidas() {
+  return new Set(correcoesAplicadas
+    .filter(item => item?.tipo === 'nota-referencia' && item.footnoteId)
+    .map(item => String(item.footnoteId)))
+}
+
+function coletarReferenciasEmNotas(secao) {
+  const corrigidas = idsNotasReferenciaCorrigidas()
+  const blocos = secao?.blocks || blocosTexto()
+  const notas = []
+  const vistos = new Set()
+  blocos
+    .filter(ehBlocoNotaMammoth)
+    .map((block, index) => {
+      const footnoteId = idBlocoNotaMammoth(block)
+      const text = limparTextoNotaMammoth(textoBloco(block))
+      return {
+        block,
+        footnoteId,
+        footnoteNumber: numeroNotaMammoth(footnoteId, textoBloco(block)),
+        text,
+        index,
+      }
+    })
+    .filter(item => item.footnoteId && !corrigidas.has(String(item.footnoteId)) && pareceReferenciaEmNota(item.text))
+    .forEach(item => {
+      const key = String(item.footnoteId)
+      if (vistos.has(key)) return
+      vistos.add(key)
+      notas.push(item)
+    })
+
+  return notas
+    .map((item, index) => {
+      const chamada = localizarChamadaNotaMammoth(item.footnoteId)
+      if (chamada) {
+        chamada.classList.add('ref-footnote')
+        chamada.dataset.occurrenceId = `footnote-ref-${item.footnoteId}-${index}`
+        chamada.title = 'Referência em nota de rodapé'
+      }
+      return {
+        id: `footnote-ref-${item.footnoteId}-${index}`,
+        text: `Nota ${item.footnoteNumber || item.footnoteId}: ${item.text}`,
+        status: 'footnote',
+        resultados: [],
+        referenceText: item.text,
+        referenceHtml: escHtml(item.text),
+        referenceType: 'nota-referencia',
+        footnoteId: item.footnoteId,
+        footnoteNumber: item.footnoteNumber,
+        issues: ['Referência bibliográfica localizada em nota de rodapé. Substitua a chamada por uma citação e mova a referência para a lista final.'],
+        element: chamada || item.block,
+        footnoteBlock: item.block,
+      }
+    })
 }
 
 function normalizarQuebrasSoltas() {
@@ -1700,6 +1815,7 @@ function classeResultado(statuses) {
 function textoStatus(status) {
   if (status === 'ok') return 'Encontrada'
   if (status === 'authorless') return 'Autor ausente'
+  if (status === 'footnote') return 'Referência em nota'
   if (status === 'partial') return 'Parcial'
   if (status === 'warning') return 'Ano divergente'
   if (status === 'format') return 'Checagem ABNT'
@@ -2346,9 +2462,10 @@ function conferirEscopo(secao, chapterLabel) {
 
   const referencias = montarReferencias(secao.referenceBlocks)
   const citacoes = coletarCitacoes(secao.bodyBlocks, referencias)
-  occurrences = anexarProblemasAbnt(aplicarMarcacoes(citacoes, referencias), referencias)
+  const notasReferencia = coletarReferenciasEmNotas(secao)
+  occurrences = anexarProblemasAbnt(aplicarMarcacoes(citacoes, referencias), referencias).concat(notasReferencia)
   prepararReferenciasClicaveis(referencias)
-  ultimoResultado = { secao, referencias, citacoes, occurrences, chapterLabel }
+  ultimoResultado = { secao, referencias, citacoes, occurrences, notasReferencia, chapterLabel }
   renderFilters()
   renderOccurrences()
   renderReferencesPanel(referencias)
@@ -2363,16 +2480,19 @@ function ativarCapitulo(index) {
   activeChapterIndex = index
   const scope = chapterScopes[index]
   conferirEscopo(scope.secao, scope.title)
+  agendarAutosalvamento()
   scope.titleBlock?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 function usarDocumentoUnico() {
   editor.querySelectorAll('.chapter-title-block').forEach(el => el.classList.remove('chapter-title-block'))
+  capituloEstiloAtual = ''
   chapterScopes = []
   activeChapterIndex = -1
   renderChapterNav()
   fecharPainelEscolhaCapitulos()
   conferirReferencias()
+  agendarAutosalvamento()
 }
 
 function continuarComCapitulos() {
@@ -2385,6 +2505,7 @@ function continuarComCapitulos() {
     return
   }
   chapterScopes = scopes
+  capituloEstiloAtual = styleKey
   activeChapterIndex = 0
   fecharPainelEscolhaCapitulos()
   ativarCapitulo(0)
@@ -2403,9 +2524,10 @@ function conferirReferencias() {
 
   const referencias = montarReferencias(secao.referenceBlocks)
   const citacoes = coletarCitacoes(secao.bodyBlocks, referencias)
-  occurrences = anexarProblemasAbnt(aplicarMarcacoes(citacoes, referencias), referencias)
+  const notasReferencia = coletarReferenciasEmNotas(secao)
+  occurrences = anexarProblemasAbnt(aplicarMarcacoes(citacoes, referencias), referencias).concat(notasReferencia)
   prepararReferenciasClicaveis(referencias)
-  ultimoResultado = { secao, referencias, citacoes, occurrences }
+  ultimoResultado = { secao, referencias, citacoes, occurrences, notasReferencia }
   renderFilters()
   renderOccurrences()
   renderReferencesPanel(referencias)
@@ -2426,6 +2548,7 @@ function renderSummary(resultado) {
   const authorless = occurrences.filter(o => o.status === 'authorless').length
   const missing = occurrences.filter(o => o.status === 'missing').length
   const format = occurrences.filter(o => o.status === 'format').length
+  const footnote = occurrences.filter(o => o.status === 'footnote').length
   const refs = resultado.referencias.length
   const citacoes = resultado.citacoes.length
   const heading = resultado.secao.heading ? 'seção de referências encontrada' : 'seção de referências não encontrada'
@@ -2433,7 +2556,7 @@ function renderSummary(resultado) {
   const chapter = resultado.chapterLabel ? ` em <strong>${escHtml(resultado.chapterLabel)}</strong>` : ''
   summaryEl.innerHTML = `
     <strong>${total}</strong> ocorrência(s)${chapter}: <strong>${citacoes}</strong> citação(ões) no texto, <strong>${refs}</strong> referência(s), ${heading}.<br>
-    Encontradas: <strong>${ok}</strong> · Parciais: <strong>${partial}</strong> · Ano divergente: <strong>${warning}</strong> · Autor ausente: <strong>${authorless}</strong> · Ausentes: <strong>${missing}</strong> · Checagem ABNT: <strong>${format}</strong>${correcoes ? ` · Correções validadas: <strong>${correcoes}</strong>` : ''}
+    Encontradas: <strong>${ok}</strong> · Parciais: <strong>${partial}</strong> · Ano divergente: <strong>${warning}</strong> · Autor ausente: <strong>${authorless}</strong> · Ausentes: <strong>${missing}</strong> · Checagem ABNT: <strong>${format}</strong> · Referências em nota: <strong>${footnote}</strong>${correcoes ? ` · Correções validadas: <strong>${correcoes}</strong>` : ''}
   `
   countBadge.textContent = String(total)
 }
@@ -2447,6 +2570,7 @@ function renderFilters() {
     ['authorless', 'Autor ausente'],
     ['missing', 'Ausentes'],
     ['format', 'Checagem ABNT'],
+    ['footnote', 'Referências em nota'],
   ]
   const counts = occurrences.reduce((acc, item) => {
     acc[item.status] = (acc[item.status] || 0) + 1
@@ -2590,7 +2714,7 @@ function renderReferencesPanel(referencias) {
     return `
       <article class="reference-item" data-ref-card="${ref.index}">
         <button type="button" class="reference-main" data-ref-index="${ref.index}">
-          <strong>${String(ref.index + 1).padStart(2, '0')}</strong>
+          <strong>${String(ref.index + 1).padStart(2, '0')}${seloComentarios({ element: ref.element })}</strong>
           <span>${ref.html || escHtml(ref.text)}</span>
         </button>
         ${renderReferenceUrls(ref)}
@@ -2668,12 +2792,23 @@ function renderOccurrences() {
 
   occurrencesEl.className = 'occurrences'
   occurrencesEl.innerHTML = list.map(o => {
+    if (o.status === 'footnote') {
+      const issues = (o.issues || []).map(issue => `<li>${formatIssueHtml(issue)}</li>`).join('')
+      return `
+        <button type="button" class="occurrence ${o.status}${o.id === activeOccurrenceId ? ' active' : ''}" data-id="${o.id}">
+          <strong>${textoStatus(o.status)}${seloComentarios(o)}</strong>
+          <span>Nota ${escHtml(o.footnoteNumber || o.footnoteId || '')}</span>
+          <span class="reference">${escHtml(o.referenceText || o.text)}</span>
+          <ul class="issue-list">${issues}</ul>
+        </button>
+      `
+    }
     if (o.status === 'format') {
       const tipo = ABNT_TIPOS[o.referenceType] || ABNT_TIPOS.desconhecido
       const issues = (o.issues || []).map(issue => `<li>${formatIssueHtml(issue)}</li>`).join('')
       return `
         <button type="button" class="occurrence ${o.status}${o.id === activeOccurrenceId ? ' active' : ''}" data-id="${o.id}">
-          <strong>${textoStatus(o.status)}</strong>
+          <strong>${textoStatus(o.status)}${seloComentarios(o)}</strong>
           <span class="reference">${escHtml(o.text)}</span>
           <span class="abnt-type">${escHtml(tipo)}</span>
           <ul class="issue-list">${issues}</ul>
@@ -2692,7 +2827,7 @@ function renderOccurrences() {
     }).join('')
     return `
       <button type="button" class="occurrence ${o.status}${o.id === activeOccurrenceId ? ' active' : ''}" data-id="${o.id}">
-        <strong>${textoStatus(o.status)}</strong>
+        <strong>${textoStatus(o.status)}${seloComentarios(o)}</strong>
         <span>${escHtml(o.text)}</span>
         ${refs}
       </button>
@@ -2704,7 +2839,7 @@ function focusOccurrence(id) {
   const item = occurrences.find(o => o.id === id)
   if (!item?.element?.isConnected) return
 
-  document.querySelectorAll('.ref-mark.active, .ref-format.active').forEach(el => el.classList.remove('active'))
+  document.querySelectorAll('.ref-mark.active, .ref-format.active, .ref-footnote.active').forEach(el => el.classList.remove('active'))
   item.element.classList.add('active')
   activeOccurrenceId = id
   renderOccurrences()
@@ -2726,7 +2861,9 @@ function ocorrenciaPodeSerCorrigida(item) {
   if (!item?.element?.isConnected) return false
   return item.element.classList.contains('ref-mark')
     || item.element.classList.contains('ref-format')
+    || item.element.classList.contains('ref-footnote')
     || item.referenceType === 'referencia-manual'
+    || item.referenceType === 'nota-referencia'
 }
 
 function ocorrenciaEhCitacao(item) {
@@ -2735,6 +2872,58 @@ function ocorrenciaEhCitacao(item) {
 
 function ocorrenciaEhReferenciaLista(item) {
   return !!item?.element?.classList.contains('ref-format') || item?.referenceType === 'referencia-manual'
+}
+
+function ocorrenciaEhNotaReferencia(item) {
+  return item?.referenceType === 'nota-referencia' || item?.status === 'footnote'
+}
+
+function blocoCompletoNotaReferencia(item) {
+  const block = item?.footnoteBlock
+  if (!block?.isConnected) return null
+  const id = item?.footnoteId ? CSS.escape(String(item.footnoteId)) : ''
+  const container = id ? block.closest?.(`#${id}`) : null
+  return container || block.closest?.('[id*="footnote"], [id*="endnote"]') || block
+}
+
+function removerBlocoNotaReferencia(item) {
+  const bloco = blocoCompletoNotaReferencia(item)
+  if (!bloco?.isConnected) return
+  const parent = bloco.parentElement
+  bloco.remove()
+  if (parent && /^(ol|ul)$/i.test(parent.tagName) && !textoBloco(parent)) {
+    parent.remove()
+  }
+}
+
+function criarBlocoReferenciaNota(item) {
+  const p = document.createElement('p')
+  p.innerHTML = item?.referenceHtml || escHtml(item?.referenceText || '')
+  return p
+}
+
+function inserirReferenciaNotaNaListaEditor(item) {
+  const novoTexto = normalizarEspacos(item?.referenceText || '')
+  if (!novoTexto) return null
+  const novoBloco = criarBlocoReferenciaNota(item)
+  const secao = encontrarSecaoReferencias()
+  const referencias = montarReferencias(secao.referenceBlocks)
+  const antesDe = referencias.find(ref => novoTexto.localeCompare(ref.text, 'pt-BR', { sensitivity: 'base' }) < 0)
+  if (antesDe?.element?.isConnected) {
+    antesDe.element.before(novoBloco)
+    return novoBloco
+  }
+  const ultima = referencias[referencias.length - 1]?.element
+  if (ultima?.isConnected) {
+    ultima.after(novoBloco)
+    return novoBloco
+  }
+  if (secao.heading?.isConnected) {
+    secao.heading.after(novoBloco)
+    return novoBloco
+  }
+  editor.appendChild(novoBloco)
+  return novoBloco
 }
 
 function chaveCorrecaoGlobal(item) {
@@ -3399,6 +3588,7 @@ function registrarComentarioManualTexto(dados, autor, comentario) {
     alvo: dados.antes,
     alvoHtml: dados.antesHtml,
     paragrafoAntes: dados.paragrafoAntes,
+    blocoIndice: indiceDoBloco(dados.bloco),
     autor,
     comentario,
     registradaEm: new Date().toISOString(),
@@ -3448,6 +3638,27 @@ function aplicarComentarioSelecaoManual() {
 
 function renderCorrecaoOcorrencia(item) {
   if (!ocorrenciaPodeSerCorrigida(item)) return ''
+  if (ocorrenciaEhNotaReferencia(item)) {
+    return `
+      <div class="correction-box footnote-reference-correction">
+        <div class="correction-before">
+          <strong>Referência localizada na nota</strong>
+          <p>${item.referenceHtml || escHtml(item.referenceText || item.text)}</p>
+        </div>
+        <label for="correctionText">Citação que substituirá a chamada da nota no texto</label>
+        <div class="correction-toolbar" aria-label="Formatação da citação">
+          <button type="button" data-format-command="bold"><strong>B</strong></button>
+          <button type="button" data-format-command="italic"><em>I</em></button>
+        </div>
+        <div id="correctionText" class="correction-editor" contenteditable="true" role="textbox" aria-multiline="true"></div>
+        <div class="correction-actions">
+          <button type="button" class="primary" data-action="apply-correction">Aplicar correção</button>
+          <span>A chamada da nota será substituída pela citação e a nota será movida para a lista de referências.</span>
+        </div>
+        <p class="correction-feedback" id="correctionFeedback"></p>
+      </div>
+    `
+  }
   const sugestao = sugerirCorrecaoOcorrencia(item)
   const htmlInicial = htmlInicialCorrecao(item, sugestao)
   const grupo = grupoCorrecaoGlobal(item)
@@ -3493,10 +3704,103 @@ function renderCorrecaoOcorrencia(item) {
   `
 }
 
+// Comentários já registrados para a ocorrência. O vínculo é o parágrafo (data-block-index, que não
+// muda com as correções; nos comentários antigos, o texto do parágrafo) e, na citação, o trecho
+// comentado. Os demais comentários do mesmo parágrafo vêm à parte, para não comentar em duplicidade.
+function indiceDoBloco(bloco) {
+  const indice = bloco?.dataset?.blockIndex
+  return indice == null || indice === '' ? null : String(indice)
+}
+
+function comentarioNoBloco(comentario, bloco) {
+  if (!bloco) return false
+  const indice = indiceDoBloco(bloco)
+  if (indice != null && comentario.blocoIndice != null) return String(comentario.blocoIndice) === indice
+  return normalizarEspacos(comentario.paragrafoAntes || '') === normalizarEspacos(textoBloco(bloco))
+}
+
+function comentariosDaOcorrencia(item) {
+  const bloco = blocoDaOcorrencia(item)
+  const doBloco = comentariosAplicados.filter(comentario => comentarioNoBloco(comentario, bloco))
+  if (!ocorrenciaEhCitacao(item)) return { proprios: doBloco, vizinhos: [] }
+  const alvo = normalizarTexto(textoAtualOcorrencia(item))
+  const ehDaCitacao = comentario => {
+    const texto = normalizarTexto(comentario.alvo)
+    return !!texto && !!alvo && (texto === alvo || texto.includes(alvo) || alvo.includes(texto))
+  }
+  return {
+    proprios: doBloco.filter(ehDaCitacao),
+    vizinhos: doBloco.filter(comentario => !ehDaCitacao(comentario)),
+  }
+}
+
+function renderItemComentario(comentario) {
+  const quando = comentario.registradaEm ? new Date(comentario.registradaEm).toLocaleString('pt-BR') : ''
+  return `
+    <li class="registered-comment">
+      <div class="registered-comment-head">
+        <strong>${escHtml(comentario.autor || 'ABeNiTa')}</strong>
+        ${quando ? `<span>${escHtml(quando)}</span>` : ''}
+        <button type="button" class="mini-button" data-action="remove-word-comment" data-comment-id="${escHtml(comentario.id)}">Remover</button>
+      </div>
+      <p>${escHtml(comentario.comentario)}</p>
+      ${comentario.alvo ? `<span class="registered-comment-target">Em: “${escHtml(comentario.alvo)}”</span>` : ''}
+    </li>
+  `
+}
+
+function renderComentariosRegistrados(item) {
+  const { proprios, vizinhos } = comentariosDaOcorrencia(item)
+  if (!proprios.length && !vizinhos.length) return ''
+  const titulo = ocorrenciaEhCitacao(item) ? 'Comentários nesta citação' : 'Comentários nesta referência'
+  return `
+    ${proprios.length ? `
+      <div class="registered-comments">
+        <strong>${titulo} (${proprios.length})</strong>
+        <ul>${proprios.map(renderItemComentario).join('')}</ul>
+      </div>` : ''}
+    ${vizinhos.length ? `
+      <div class="registered-comments neighbors">
+        <strong>Outros comentários neste parágrafo (${vizinhos.length})</strong>
+        <ul>${vizinhos.map(renderItemComentario).join('')}</ul>
+      </div>` : ''}
+  `
+}
+
+function atualizarComentariosRegistradosNoModal() {
+  const item = occurrences.find(o => o.id === sourceModalOccurrenceId) || sourceModalItem
+  const alvo = sourceModalBody?.querySelector('#registeredComments')
+  if (item && alvo) alvo.innerHTML = renderComentariosRegistrados(item)
+}
+
+function seloComentarios(item) {
+  if (!comentariosAplicados.length) return ''
+  const total = comentariosDaOcorrencia(item).proprios.length
+  return total ? ` <span class="occurrence-comment-badge" title="${total} comentário(s) registrado(s)">💬 ${total}</span>` : ''
+}
+
+function removerComentarioRegistrado(id) {
+  const comentario = comentariosAplicados.find(c => c.id === id)
+  if (!comentario) return
+  if (!confirm(`Remover este comentário?\n\n“${comentario.comentario}”`)) return
+  comentariosAplicados = comentariosAplicados.filter(c => c.id !== id)
+  window.refsComentariosAplicados = comentariosAplicados
+  atualizarEstadoExportacao()
+  atualizarComentariosRegistradosNoModal()
+  atualizarSelosComentarios()
+  renderSummary(ultimoResultado)
+}
+
+function atualizarSelosComentarios() {
+  renderOccurrences()
+  if (ultimoResultado?.referencias) renderReferencesPanel(ultimoResultado.referencias)
+}
+
 function renderComentarioOcorrencia(item) {
   if (!ocorrenciaPodeSerCorrigida(item)) return ''
   return `
     <div class="comment-box">
+      <div id="registeredComments">${renderComentariosRegistrados(item)}</div>
       <label for="commentAuthor">Comentário no Word</label>
       <input id="commentAuthor" type="text" value="${escHtml(comentarioAutorPadrao)}" placeholder="Autor do comentário" />
       <textarea id="commentText" rows="3" placeholder="Escreva o comentário que deve aparecer no Word."></textarea>
@@ -3549,6 +3853,14 @@ function htmlFonteReferencia(ref) {
 
 function renderFonteReferencia(item) {
   if (!item) return ''
+  if (ocorrenciaEhNotaReferencia(item)) {
+    return `
+      <div class="source-item footnote">
+        <strong>Nota ${escHtml(item.footnoteNumber || item.footnoteId || '')}</strong>
+        <p>${item.referenceHtml || escHtml(item.referenceText || item.text)}</p>
+      </div>
+    `
+  }
   if (item.status === 'format' || item.referenceType === 'referencia-manual') {
     const tipo = ABNT_TIPOS[item.referenceType] || ABNT_TIPOS.desconhecido
     const referenciaHtml = item.element?.isConnected
@@ -3606,7 +3918,11 @@ function abrirModalItem(item) {
   if (!item || !sourceModal) return
   sourceModalOccurrenceId = item.id
   sourceModalItem = item
-  if (sourceModalTitle) sourceModalTitle.textContent = ocorrenciaEhCitacao(item) ? 'Citação' : 'Fonte da referência'
+  if (sourceModalTitle) {
+    sourceModalTitle.textContent = ocorrenciaEhNotaReferencia(item)
+      ? 'Referência em nota de rodapé'
+      : ocorrenciaEhCitacao(item) ? 'Citação' : 'Fonte da referência'
+  }
   sourceModalCitation.textContent = item.text || ''
   sourceModalBody.innerHTML = ocorrenciaEhCitacao(item)
     ? renderModalCitacao(item)
@@ -3698,6 +4014,28 @@ function registrarCorrecaoValidada(item, antes, depois, antesHtml, depoisHtml, p
   atualizarEstadoExportacao()
 }
 
+function registrarCorrecaoNotaReferencia(item, citacaoHtml) {
+  const htmlFinal = sanitizarHtmlCorrecao(citacaoHtml)
+  const citacao = textoDeHtmlCorrecao(htmlFinal)
+  correcoesAplicadas.push({
+    id: `correcao-nota-${Date.now()}-${correcoesAplicadas.length + 1}`,
+    tipo: 'nota-referencia',
+    footnoteId: item.footnoteId,
+    footnoteNumber: item.footnoteNumber,
+    antes: item.text,
+    depois: citacao,
+    antesHtml: item.referenceHtml || escHtml(item.referenceText || item.text),
+    depoisHtml: htmlFinal,
+    citacao,
+    citacaoHtml: htmlFinal,
+    referencia: item.referenceText || '',
+    referenciaHtml: item.referenceHtml || escHtml(item.referenceText || ''),
+    registradaEm: new Date().toISOString(),
+  })
+  window.refsCorrecoesAplicadas = correcoesAplicadas
+  atualizarEstadoExportacao()
+}
+
 function registrarComentarioWord(item, autor, comentario) {
   const alvo = textoAtualOcorrencia(item)
   const alvoHtml = htmlAnteriorOcorrencia(item)
@@ -3708,6 +4046,7 @@ function registrarComentarioWord(item, autor, comentario) {
     alvo,
     alvoHtml,
     paragrafoAntes: bloco ? textoBloco(bloco) : '',
+    blocoIndice: indiceDoBloco(bloco),
     autor,
     comentario,
     registradaEm: new Date().toISOString(),
@@ -3742,6 +4081,8 @@ function adicionarComentarioOcorrencia() {
   comentarioAutorPadrao = autor
   registrarComentarioWord(item, autor, comentario)
   commentInput.value = ''
+  atualizarComentariosRegistradosNoModal()
+  atualizarSelosComentarios()
   if (feedback) feedback.textContent = `Comentário registrado para exportação. Total de comentários: ${comentariosAplicados.length}.`
 }
 
@@ -3808,6 +4149,28 @@ function aplicarCorrecaoOcorrencia() {
     if (feedback) feedback.textContent = 'Informe o texto corrigido antes de aplicar.'
     return
   }
+
+  if (ocorrenciaEhNotaReferencia(item)) {
+    registrarCorrecaoNotaReferencia(item, editorHtml)
+    const marcador = item.element
+    if (marcador?.isConnected) {
+      const span = document.createElement('span')
+      span.className = 'ref-mark ok'
+      span.textContent = ` ${textoEditor}`
+      marcador.replaceWith(span)
+      item.element = span
+    }
+    inserirReferenciaNotaNaListaEditor(item)
+    removerBlocoNotaReferencia(item)
+    conferirReferencias()
+    if (feedback) {
+      feedback.textContent = 'Correção registrada: a chamada da nota será substituída pela citação e a referência entrará na lista final.'
+    } else {
+      dropZone.textContent = 'Correção de referência em nota registrada para o DOCX corrigido.'
+    }
+    return
+  }
+
   const mudancas = mudancasCorrecaoSequencia(item, editorHtml)
   if (!mudancas.length) {
     if (feedback) feedback.textContent = 'O texto corrigido está igual ao texto atual.'
@@ -3875,16 +4238,26 @@ function ocultarImagensDoEditor() {
 
 async function importDocx(file) {
   if (!file) return
+  if (haTrabalhoNaoSalvo() && !confirm('O trabalho atual tem alterações que não foram salvas em arquivo (Salvar trabalho). Importar outro DOCX mesmo assim?')) {
+    docxInput.value = ''
+    return
+  }
   limparCorrecoesAplicadas()
   stripMarks()
   chapterScopes = []
+  capituloEstiloAtual = ''
   activeChapterIndex = -1
+  trabalhoCaminho = ''
+  trabalhoAssinaturaSalva = ''
   editor.querySelectorAll('.chapter-title-block').forEach(el => el.classList.remove('chapter-title-block'))
   renderChapterNav()
   dropZone.textContent = `Importando ${file.name}...`
   const arrayBuffer = await file.arrayBuffer()
   importedDocxArrayBuffer = arrayBuffer.slice(0)
   importedDocxName = file.name
+  const caminhoDocx = window.refsBridge?.caminhoDoArquivo?.(file) || ''
+  importedDocxPasta = caminhoDocx ? caminhoDocx.replace(/[\\/][^\\/]*$/, '') : ''
+  pediuLocalDoTrabalho = false
   atualizarEstadoExportacao()
   let estruturaDocx = null
   if (window.refsBridge && typeof window.refsBridge.extrairEstruturaDocx === 'function') {
@@ -4037,6 +4410,297 @@ async function exportarDocxCorrigido() {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Trabalho em andamento: "Salvar trabalho" (.abenita) e recuperação automática. O estado salvo é
+// o DOCX original, o texto do editor já com as correções (sem as marcações da conferência, que
+// são refeitas ao abrir), as listas de correções/comentários e a divisão em capítulos.
+
+function trabalhoTemConteudo() {
+  return !!importedDocxArrayBuffer && (correcoesAplicadas.length > 0 || comentariosAplicados.length > 0)
+}
+
+function assinaturaTrabalho() {
+  return [
+    importedDocxName,
+    correcoesAplicadas.map(c => c.id).join(','),
+    comentariosAplicados.map(c => c.id).join(','),
+    normalizacoesAutomaticasDocx,
+    capituloEstiloAtual,
+  ].join('|')
+}
+
+// cópia do editor sem as marcações da conferência e da busca (o mesmo que stripMarks faz na página)
+function htmlEditorLimpo() {
+  const copia = editor.cloneNode(true)
+  copia.querySelectorAll('span.ref-mark, span.manual-comment-mark, span.text-search-mark').forEach(mark => {
+    mark.replaceWith(...Array.from(mark.childNodes))
+  })
+  copia.querySelectorAll('.refs-heading, .ref-format, .ref-footnote, .ref-list-entry, .chapter-title-block, .active').forEach(el => {
+    el.classList.remove('refs-heading', 'ref-format', 'ref-footnote', 'ref-list-entry', 'chapter-title-block', 'active')
+    if (!el.classList.length) el.removeAttribute('class')
+    delete el.dataset.occurrenceId
+    delete el.dataset.refIndex
+  })
+  copia.normalize()
+  return copia.innerHTML
+}
+
+function estadoDoTrabalho() {
+  return {
+    docxNome: importedDocxName,
+    docxPasta: importedDocxPasta,
+    docxArrayBuffer: importedDocxArrayBuffer,
+    editorHtml: htmlEditorLimpo(),
+    docxParagraphMeta,
+    correcoes: correcoesAplicadas,
+    comentarios: comentariosAplicados,
+    normalizacoesAutomaticas: normalizacoesAutomaticasDocx,
+    capitulo: { estilo: capituloEstiloAtual, ativo: activeChapterIndex },
+    comentarioAutorPadrao,
+  }
+}
+
+function atualizarBotaoSalvarTrabalho() {
+  if (!saveWorkBtn) return
+  const pendente = trabalhoTemConteudo() && assinaturaTrabalho() !== trabalhoAssinaturaSalva
+  saveWorkBtn.textContent = pendente ? 'Salvar trabalho •' : 'Salvar trabalho'
+  const quando = autosalvamentoUltimo ? ` (última gravação às ${autosalvamentoUltimo.toLocaleTimeString('pt-BR')})` : ''
+  saveWorkBtn.title = trabalhoCaminho
+    ? `Salvo automaticamente a cada alteração em ${trabalhoCaminho}${quando}. Ctrl+Shift+S salva em outro lugar.`
+    : 'Salvar o trabalho num arquivo .abenita (Ctrl+S). Depois disso, cada alteração é gravada nele automaticamente.'
+}
+
+// Autossalvamento: a cada alteração (correção, comentário, remoção, capítulo), grava a cópia de
+// recuperação e, se o trabalho já tem arquivo .abenita, o próprio arquivo. As gravações entram
+// numa fila, para nunca rodarem duas ao mesmo tempo.
+function agendarAutosalvamento() {
+  atualizarBotaoSalvarTrabalho()
+  if (!window.refsBridge?.autosalvarTrabalho || !trabalhoTemConteudo()) return
+  // primeira alteração de um trabalho sem arquivo: pergunta onde salvar (uma vez por documento)
+  if (!trabalhoCaminho && !pediuLocalDoTrabalho) {
+    pediuLocalDoTrabalho = true
+    setTimeout(pedirLocalDoTrabalho, 450)
+  }
+  // espera o fim da ação em curso: algumas correções mexem na página depois de registradas
+  clearTimeout(autosalvamentoTimer)
+  autosalvamentoTimer = setTimeout(autosalvarAgora, 400)
+}
+
+function autosalvarAgora() {
+  clearTimeout(autosalvamentoTimer)
+  autosalvamentoTimer = null
+  autosalvamentoFila = autosalvamentoFila.then(gravarAutosalvamento, gravarAutosalvamento)
+  return autosalvamentoFila
+}
+
+async function gravarAutosalvamento() {
+  // trabalho vazio (ex.: depois de "Limpar marcações") não sobrescreve o que já foi gravado
+  if (!trabalhoTemConteudo() || !window.refsBridge?.autosalvarTrabalho) return
+  const estado = estadoDoTrabalho()
+  const assinatura = assinaturaTrabalho()
+  const caminho = trabalhoCaminho
+  try {
+    const resultado = await window.refsBridge.autosalvarTrabalho(estado)
+    if (!resultado?.ok) console.warn('Recuperação automática não gravada:', resultado?.erro)
+  } catch (err) {
+    console.warn('Recuperação automática não gravada.', err)
+  }
+  if (!caminho || assinatura === trabalhoAssinaturaSalva) {
+    atualizarBotaoSalvarTrabalho()
+    return
+  }
+  try {
+    const resultado = await window.refsBridge.salvarTrabalho({ estado, filePath: caminho })
+    if (resultado?.ok && caminho === trabalhoCaminho) {
+      trabalhoAssinaturaSalva = assinatura
+      autosalvamentoUltimo = new Date()
+    } else if (!resultado?.ok) {
+      console.warn('Arquivo do trabalho não gravado:', resultado?.erro)
+    }
+  } catch (err) {
+    console.warn('Arquivo do trabalho não gravado.', err)
+  }
+  atualizarBotaoSalvarTrabalho()
+}
+
+async function pedirLocalDoTrabalho() {
+  if (trabalhoCaminho || !trabalhoTemConteudo()) return
+  const salvo = await salvarTrabalho({
+    titulo: 'Onde salvar este trabalho? As próximas alterações serão gravadas nele automaticamente',
+  })
+  if (!salvo && !trabalhoCaminho) {
+    dropZone.textContent = 'O trabalho ainda não tem arquivo: as alterações estão numa cópia de recuperação. '
+      + 'Use "Salvar trabalho" (Ctrl+S) para escolher onde salvar; depois disso, cada alteração é gravada automaticamente.'
+  }
+}
+
+// grava já o que estiver pendente (usado ao fechar a janela)
+async function descarregarAutosalvamento() {
+  if (autosalvamentoTimer) await autosalvarAgora()
+  else await autosalvamentoFila
+  return haTrabalhoNaoSalvo()
+}
+
+let salvandoTrabalho = null
+
+function salvarTrabalho(opcoes = {}) {
+  // um diálogo de cada vez (ex.: Ctrl+S com a pergunta da primeira alteração aberta)
+  if (salvandoTrabalho) return salvandoTrabalho
+  salvandoTrabalho = salvarTrabalhoAgora(opcoes).finally(() => { salvandoTrabalho = null })
+  return salvandoTrabalho
+}
+
+async function salvarTrabalhoAgora({ escolherLocal = false, titulo = '' } = {}) {
+  if (!window.refsBridge?.salvarTrabalho) {
+    alert('Salvar o trabalho está disponível no app desktop do ABeNiTa.')
+    return false
+  }
+  if (!importedDocxArrayBuffer) {
+    alert('Importe um DOCX antes de salvar o trabalho.')
+    return false
+  }
+  // não concorre com um autossalvamento em curso (que poderia gravar um estado anterior por cima)
+  await autosalvamentoFila
+  const assinatura = assinaturaTrabalho()
+  try {
+    const resultado = await window.refsBridge.salvarTrabalho({
+      estado: estadoDoTrabalho(),
+      filePath: trabalhoCaminho,
+      escolherLocal,
+      titulo,
+      pastaPadrao: importedDocxPasta,
+    })
+    if (resultado?.cancelado) return false
+    if (!resultado?.ok) {
+      alert(resultado?.erro || 'Não foi possível salvar o trabalho.')
+      return false
+    }
+    trabalhoCaminho = resultado.filePath
+    trabalhoAssinaturaSalva = assinatura
+    autosalvamentoUltimo = new Date()
+    atualizarBotaoSalvarTrabalho()
+    dropZone.textContent = `Trabalho salvo em ${resultado.filePath}. A partir de agora, cada alteração é gravada nele automaticamente. Correções: ${correcoesAplicadas.length}; comentários: ${comentariosAplicados.length}.`
+    // alteração feita enquanto o diálogo estava aberto: grava no arquivo recém-escolhido
+    if (assinaturaTrabalho() !== assinatura) agendarAutosalvamento()
+    return true
+  } catch (err) {
+    console.error(err)
+    alert(`Não foi possível salvar o trabalho: ${err.message || err}`)
+    return false
+  }
+}
+
+function paraArrayBuffer(dados) {
+  if (dados instanceof ArrayBuffer) return dados
+  if (ArrayBuffer.isView(dados)) return dados.buffer.slice(dados.byteOffset, dados.byteOffset + dados.byteLength)
+  return null
+}
+
+function restaurarTrabalho(estado, { caminho = '', origem = 'arquivo' } = {}) {
+  const docx = paraArrayBuffer(estado?.docxArrayBuffer)
+  if (!docx || typeof estado?.editorHtml !== 'string') throw new Error('O trabalho salvo está incompleto.')
+
+  fecharModalFonte()
+  fecharPainelEscolhaCapitulos()
+  pediuLocalDoTrabalho = true  // não pergunta durante a própria restauração
+  limparCorrecoesAplicadas()
+  stripMarks()
+  importedDocxArrayBuffer = docx
+  importedDocxName = estado.docxNome || 'abenita.docx'
+  importedDocxPasta = estado.docxPasta || (caminho ? caminho.replace(/[\\/][^\\/]*$/, '') : '')
+  editor.innerHTML = estado.editorHtml || '<p></p>'
+  docxParagraphMeta = Array.isArray(estado.docxParagraphMeta) ? estado.docxParagraphMeta : []
+  correcoesAplicadas = Array.isArray(estado.correcoes) ? estado.correcoes : []
+  comentariosAplicados = Array.isArray(estado.comentarios) ? estado.comentarios : []
+  normalizacoesAutomaticasDocx = Number(estado.normalizacoesAutomaticas) || 0
+  window.refsCorrecoesAplicadas = correcoesAplicadas
+  window.refsComentariosAplicados = comentariosAplicados
+  if (estado.comentarioAutorPadrao) comentarioAutorPadrao = estado.comentarioAutorPadrao
+
+  capituloEstiloAtual = estado.capitulo?.estilo || ''
+  chapterScopes = capituloEstiloAtual ? montarEscoposPorEstilo(capituloEstiloAtual) : []
+  if (!chapterScopes.length) capituloEstiloAtual = ''
+  activeChapterIndex = chapterScopes.length
+    ? Math.min(Math.max(Number(estado.capitulo?.ativo) || 0, 0), chapterScopes.length - 1)
+    : -1
+  renderChapterNav()
+  if (chapterScopes.length) conferirEscopo(chapterScopes[activeChapterIndex].secao, chapterScopes[activeChapterIndex].title)
+  else conferirReferencias()
+
+  trabalhoCaminho = caminho
+  autosalvamentoUltimo = null
+  // recuperado da cópia automática: ainda não está salvo em arquivo nenhum
+  trabalhoAssinaturaSalva = origem === 'arquivo' ? assinaturaTrabalho() : ''
+  atualizarEstadoExportacao()
+  // recuperado sem arquivo: a próxima alteração pergunta onde salvar
+  pediuLocalDoTrabalho = origem === 'arquivo'
+  const quando = estado.salvoEm ? new Date(estado.salvoEm).toLocaleString('pt-BR') : ''
+  dropZone.innerHTML = `<strong>${escHtml(importedDocxName)}</strong> ${origem === 'arquivo' ? 'reaberto' : 'recuperado'}`
+    + `${quando ? ` (salvo em ${escHtml(quando)})` : ''}. Correções: ${correcoesAplicadas.length}; comentários: ${comentariosAplicados.length}.`
+    + (origem === 'arquivo' ? '' : ' Use Salvar trabalho para guardá-lo num arquivo.')
+}
+
+function haTrabalhoNaoSalvo() {
+  return trabalhoTemConteudo() && assinaturaTrabalho() !== trabalhoAssinaturaSalva
+}
+
+async function abrirTrabalho() {
+  if (!window.refsBridge?.abrirTrabalho) {
+    alert('Abrir um trabalho salvo está disponível no app desktop do ABeNiTa.')
+    return
+  }
+  if (haTrabalhoNaoSalvo() && !confirm('O trabalho atual tem alterações que não foram salvas em arquivo. Abrir outro mesmo assim?')) return
+  try {
+    const resultado = await window.refsBridge.abrirTrabalho()
+    if (resultado?.cancelado) return
+    if (!resultado?.ok) {
+      alert(resultado?.erro || 'Não foi possível abrir o trabalho.')
+      return
+    }
+    restaurarTrabalho(resultado.estado, { caminho: resultado.filePath, origem: 'arquivo' })
+  } catch (err) {
+    console.error(err)
+    alert(`Não foi possível abrir o trabalho: ${err.message || err}`)
+  }
+}
+
+// ao iniciar: se ficou uma cópia automática (o app fechou com trabalho em andamento), oferece recuperar
+async function oferecerRecuperacao() {
+  if (!window.refsBridge?.lerRecuperacao) return
+  let resultado
+  try {
+    resultado = await window.refsBridge.lerRecuperacao()
+  } catch (err) {
+    console.warn('Não foi possível ler a recuperação automática.', err)
+    return
+  }
+  if (!resultado?.ok || importedDocxArrayBuffer) return
+  const estado = resultado.estado
+  const correcoes = Array.isArray(estado.correcoes) ? estado.correcoes.length : 0
+  const comentarios = Array.isArray(estado.comentarios) ? estado.comentarios.length : 0
+  const quando = estado.salvoEm ? new Date(estado.salvoEm).toLocaleString('pt-BR') : ''
+  dropZone.innerHTML = `
+    <div class="recovery-offer">
+      <span>Há um trabalho de <strong>${escHtml(estado.docxNome || 'DOCX')}</strong> guardado automaticamente${quando ? ` em ${escHtml(quando)}` : ''}
+      (${correcoes} correção(ões), ${comentarios} comentário(s)).</span>
+      <button type="button" class="primary" data-recovery="restaurar">Recuperar</button>
+      <button type="button" data-recovery="descartar">Descartar</button>
+    </div>`
+  dropZone.querySelector('[data-recovery="restaurar"]')?.addEventListener('click', () => {
+    try {
+      restaurarTrabalho(estado, { origem: 'recuperacao' })
+    } catch (err) {
+      console.error(err)
+      alert(`Não foi possível recuperar o trabalho: ${err.message || err}`)
+    }
+  })
+  dropZone.querySelector('[data-recovery="descartar"]')?.addEventListener('click', async () => {
+    if (!confirm('Descartar o trabalho guardado automaticamente? Ele não poderá ser recuperado depois.')) return
+    await window.refsBridge.descartarRecuperacao().catch(() => {})
+    dropZone.innerHTML = '<strong>Importe um DOCX</strong> ou use o botão Colar texto para começar.'
+  })
+}
+
 docxInput.addEventListener('change', event => {
   const file = event.target.files?.[0]
   importDocx(file).catch(err => {
@@ -4050,7 +4714,15 @@ abntHelpBtn?.addEventListener('click', () => abrirAjudaAbnt({ editar: false }))
 manualReplaceBtn?.addEventListener('click', abrirModalAlterarTextoSelecionado)
 manualCommentBtn?.addEventListener('click', abrirModalComentarTextoSelecionado)
 exportCorrectedBtn?.addEventListener('click', exportarDocxCorrigido)
+saveWorkBtn?.addEventListener('click', () => salvarTrabalho())
+openWorkBtn?.addEventListener('click', abrirTrabalho)
 clearBtn.addEventListener('click', () => {
+  const registrados = correcoesAplicadas.length + comentariosAplicados.length
+  if (registrados && !confirm(
+    `Limpar marcações também descarta ${correcoesAplicadas.length} correção(ões) e ${comentariosAplicados.length} comentário(s) já registrados`
+    + (trabalhoCaminho ? ', e a próxima alteração grava isso no arquivo do trabalho' : '')
+    + '. Continuar?',
+  )) return
   limparCorrecoesAplicadas()
   stripMarks()
 })
@@ -4088,6 +4760,8 @@ pasteModeBtn.addEventListener('click', async () => {
   stripMarks()
   importedDocxArrayBuffer = null
   importedDocxName = ''
+  trabalhoCaminho = ''
+  trabalhoAssinaturaSalva = ''
   atualizarEstadoExportacao()
   const text = await navigator.clipboard.readText().catch(() => '')
   if (text) {
@@ -4137,9 +4811,18 @@ referencesListEl?.addEventListener('click', event => {
 })
 
 editor.addEventListener('click', event => {
-  const mark = event.target.closest('.ref-mark, .ref-format, .ref-list-entry')
+  // hiperlink vindo do DOCX: clique simples não sai do app (a referência abre normalmente);
+  // Ctrl+clique abre no navegador, como no Word. Âncoras internas (#nota) seguem como antes.
+  const link = event.target.closest('a[href]')
+  const href = link?.getAttribute('href') || ''
+  if (link && !href.startsWith('#')) {
+    event.preventDefault()
+    if (event.ctrlKey || event.metaKey) window.open(link.href, '_blank')
+  }
+
+  const mark = event.target.closest('.ref-mark, .ref-format, .ref-footnote, .ref-list-entry')
   if (!mark) return
-  if (mark.classList.contains('ref-mark') || mark.classList.contains('ref-format')) {
+  if (mark.classList.contains('ref-mark') || mark.classList.contains('ref-format') || mark.classList.contains('ref-footnote')) {
     focusOccurrence(mark.dataset.occurrenceId)
     abrirModalFonte(mark.dataset.occurrenceId)
     return
@@ -4149,7 +4832,7 @@ editor.addEventListener('click', event => {
   const ref = ultimoResultado?.referencias?.find(item => item.index === refIndex)
   if (!ref?.element?.isConnected) return
 
-  document.querySelectorAll('.ref-mark.active, .ref-format.active, .ref-list-entry.active').forEach(el => el.classList.remove('active'))
+  document.querySelectorAll('.ref-mark.active, .ref-format.active, .ref-footnote.active, .ref-list-entry.active').forEach(el => el.classList.remove('active'))
   ref.element.classList.add('active')
   const range = document.createRange()
   range.selectNodeContents(ref.element)
@@ -4202,6 +4885,11 @@ sourceModalBody?.addEventListener('click', event => {
     adicionarComentarioOcorrencia()
     return
   }
+  const removerComentarioBtn = event.target.closest('[data-action="remove-word-comment"]')
+  if (removerComentarioBtn) {
+    removerComentarioRegistrado(removerComentarioBtn.dataset.commentId)
+    return
+  }
   if (event.target.closest('[data-action="apply-selection-correction"]')) {
     aplicarCorrecaoSelecaoManual()
     return
@@ -4219,6 +4907,11 @@ sourceModal?.addEventListener('click', event => {
   if (event.target.closest('[data-source-close]')) fecharModalFonte()
 })
 document.addEventListener('keydown', event => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault()
+    salvarTrabalho({ escolherLocal: event.shiftKey })
+    return
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
     event.preventDefault()
     textSearchInput?.focus()
@@ -4251,3 +4944,4 @@ renderOccurrences()
 atualizarEstadoExportacao()
 textSearchCaseBtn?.setAttribute('aria-pressed', 'false')
 atualizarContadorBuscaTexto()
+oferecerRecuperacao()
