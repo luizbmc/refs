@@ -924,6 +924,44 @@ function aplicarCorrecoesNotasReferenciaDocumentXml(documentXml, correcoesNotas,
   return { xml, aplicadas, ignoradas };
 }
 
+// Marca a marca de parágrafo como excluída (<w:del/> no rPr do pPr). Com o texto também excluído,
+// aceitar a alteração no Word remove o parágrafo inteiro. O rPr do pPr vem antes de sectPr/pPrChange,
+// e dentro dele w:ins/w:del são os primeiros filhos. Parágrafo com quebra de seção fica como está.
+function marcarMarcaParagrafoExcluida(paragraphXml, revision) {
+  const del = `<w:del ${criarTrackedChangeAttrs(revision.author, revision.date, revision.deleteId)}/>`;
+  const abertura = (paragraphXml.match(/^<w:p\b[^>]*>/) || [])[0];
+  if (!abertura) return paragraphXml;
+  const pPrRe = /<w:pPr\b[^>]*\/>|<w:pPr\b[^>]*>(?:<w:pPrChange\b[\s\S]*?<\/w:pPrChange>|[\s\S])*?<\/w:pPr>/;
+  const pPrMatch = paragraphXml.slice(abertura.length).match(pPrRe);
+  // o pPr, se houver, é o primeiro filho do parágrafo
+  if (!pPrMatch || pPrMatch.index !== 0) {
+    return `${abertura}<w:pPr><w:rPr>${del}</w:rPr></w:pPr>${paragraphXml.slice(abertura.length)}`;
+  }
+  const pPr = pPrMatch[0];
+  let novoPPr;
+  if (/\/>$/.test(pPr) && !/<\/w:pPr>$/.test(pPr)) {
+    novoPPr = pPr.replace(/\s*\/>$/, `><w:rPr>${del}</w:rPr></w:pPr>`);
+  } else {
+    let change = '';
+    const semChange = pPr.replace(/<w:pPrChange\b[\s\S]*?<\/w:pPrChange>/, m => { change = m; return '\u0000'; });
+    if (/<w:sectPr\b/.test(semChange)) return paragraphXml;
+    if (/<w:del\b/.test(semChange.replace(/\u0000/, ''))) return paragraphXml;
+    const rPrRe = /<w:rPr\b[^>]*\/>|<w:rPr\b[^>]*>(?:<w:rPrChange\b[\s\S]*?<\/w:rPrChange>|[\s\S])*?<\/w:rPr>/;
+    let comDel;
+    if (rPrRe.test(semChange)) {
+      comDel = semChange.replace(rPrRe, rPr => {
+        if (/\/>$/.test(rPr) && !/<\/w:rPr>$/.test(rPr)) return `<w:rPr>${del}</w:rPr>`;
+        return rPr.replace(/^(<w:rPr\b[^>]*>(?:<w:ins\b[^>]*\/>)?)/, `$1${del}`);
+      });
+    } else {
+      const fim = semChange.includes('\u0000') ? '\u0000' : '</w:pPr>';
+      comDel = semChange.replace(fim, `<w:rPr>${del}</w:rPr>${fim}`);
+    }
+    novoPPr = comDel.replace('\u0000', change);
+  }
+  return abertura + novoPPr + paragraphXml.slice(abertura.length + pPr.length);
+}
+
 function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles, autorPadrao = 'ABeNiTa') {
   const aplicadas = [];
   const ignoradas = [];
@@ -933,8 +971,9 @@ function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles, autorPa
 
   (correcoes || []).forEach((correcao, index) => {
     const antes = correcao.antes || '';
-    const depoisHtml = correcao.depoisHtml || correcao.depois || '';
-    if (!normalizarBusca(antes) || !normalizarBusca(correcao.depois || depoisHtml)) {
+    const exclusao = correcao.tipo === 'exclusao';
+    const depoisHtml = exclusao ? '' : (correcao.depoisHtml || correcao.depois || '');
+    if (!normalizarBusca(antes) || (!exclusao && !normalizarBusca(correcao.depois || depoisHtml))) {
       ignoradas.push({ index, motivo: 'CorreÃ§Ã£o vazia.' });
       return;
     }
@@ -956,9 +995,17 @@ function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles, autorPa
           deleteId: revisionId,
           insertId: revisionId + 1
         };
-        const novo = substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles, revision);
+        let novo = substituirEmParagrafo(paragraphXml, antes, depoisHtml, charStyles, revision);
         if (!novo || novo === paragraphXml) return paragraphXml;
         revisionId += 2;
+        // parágrafo inteiro excluído: a marca de parágrafo também sai, para não sobrar parágrafo vazio
+        if (exclusao && correcao.paragrafoInteiro && textoNormalizado === antesNormalizado) {
+          const comMarca = marcarMarcaParagrafoExcluida(novo, { ...revision, deleteId: revisionId });
+          if (comMarca !== novo) {
+            novo = comMarca;
+            revisionId += 1;
+          }
+        }
         substituiuNestaPassagem = true;
         return novo;
       });

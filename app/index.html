@@ -26,6 +26,7 @@
       <button id="runBtn" type="button" class="primary">Conferir referências</button>
       <button id="abntHelpBtn" type="button">Ajuda ABNT</button>
       <button id="manualReplaceBtn" type="button">Alterar texto selecionado</button>
+      <button id="manualDeleteBtn" type="button" title="Excluir o trecho selecionado (registrado como exclusão no controle de alterações)">Excluir texto selecionado</button>
       <button id="manualCommentBtn" type="button">Comentar texto selecionado</button>
       <button id="exportCorrectedBtn" type="button" disabled>Baixar DOCX corrigido</button>
       <button id="clearBtn" type="button">Limpar marcações</button>
@@ -134,6 +135,25 @@
         <div class="export-author-actions">
           <button id="exportAuthorCancel" type="button">Cancelar</button>
           <button id="exportAuthorConfirm" type="button" class="primary">Baixar DOCX</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="authorPropagateModal" class="source-modal author-propagate-modal hidden" role="dialog" aria-modal="true" aria-labelledby="authorPropagateTitle">
+    <div class="source-modal-backdrop" data-author-propagate-cancel></div>
+    <section class="source-modal-card author-propagate-card">
+      <header class="source-modal-head">
+        <div>
+          <h2 id="authorPropagateTitle">Autoria alterada na referência</h2>
+          <p id="authorPropagateSummary"></p>
+        </div>
+      </header>
+      <div class="source-modal-body">
+        <div id="authorPropagateList" class="author-propagate-list"></div>
+        <div class="export-author-actions">
+          <button id="authorPropagateCancel" type="button">Não alterar as citações</button>
+          <button id="authorPropagateConfirm" type="button" class="primary">Aplicar às citações marcadas</button>
         </div>
       </div>
     </section>

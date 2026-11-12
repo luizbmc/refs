@@ -802,6 +802,36 @@ button:disabled,
   width: min(420px, calc(100vw - 32px));
 }
 
+/* fica acima do modal da referência, que pode continuar aberto por baixo */
+.author-propagate-modal { z-index: 520; }
+
+.author-propagate-card {
+  width: min(640px, calc(100vw - 32px));
+}
+
+.author-propagate-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.author-propagate-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fffdf8;
+  font: 13px/1.4 "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+
+.author-propagate-item input { margin-top: 3px; }
+.author-propagate-item del { color: #9b2c2c; }
+.author-propagate-item ins { color: #276749; text-decoration: none; font-weight: 700; }
+
 .source-modal-head {
   display: flex;
   align-items: flex-start;

@@ -5,6 +5,7 @@ const abntHelpBtn = document.getElementById('abntHelpBtn')
 const clearBtn = document.getElementById('clearBtn')
 const pasteModeBtn = document.getElementById('pasteModeBtn')
 const manualReplaceBtn = document.getElementById('manualReplaceBtn')
+const manualDeleteBtn = document.getElementById('manualDeleteBtn')
 const manualCommentBtn = document.getElementById('manualCommentBtn')
 const occurrencesEl = document.getElementById('occurrences')
 const countBadge = document.getElementById('countBadge')
@@ -37,6 +38,11 @@ const abntHelpImportInput = document.getElementById('abntHelpImportInput')
 const exportAuthorModal = document.getElementById('exportAuthorModal')
 const exportAuthorInput = document.getElementById('exportAuthorInput')
 const exportAuthorCancel = document.getElementById('exportAuthorCancel')
+const authorPropagateModal = document.getElementById('authorPropagateModal')
+const authorPropagateSummary = document.getElementById('authorPropagateSummary')
+const authorPropagateList = document.getElementById('authorPropagateList')
+const authorPropagateConfirm = document.getElementById('authorPropagateConfirm')
+const authorPropagateCancel = document.getElementById('authorPropagateCancel')
 const exportAuthorConfirm = document.getElementById('exportAuthorConfirm')
 
 let occurrences = []
@@ -952,7 +958,11 @@ function montarReferencias(referenceBlocks) {
   let ultimaAutoriaOriginalExplicita = ''
   let sequenciaAutoriaSubstituida = 0
   return refs.map((ref, index) => {
-    const anos = Array.from(new Set((ref.text.match(YEAR_GLOBAL_RE) || []).map(ano => ano.toLowerCase())))
+    // anos da parte bibliográfica: o "Acesso em: 26 maio 2026" (e URLs) não é o ano da obra
+    const corteOnline = ref.text.search(/Dispon\S*\s+em:?|Acesso\s+em:?|https?:\/\//i)
+    const trechoPrincipal = corteOnline > 0 ? ref.text.slice(0, corteOnline) : ref.text
+    const anosEncontrados = trechoPrincipal.match(YEAR_GLOBAL_RE) || ref.text.match(YEAR_GLOBAL_RE) || []
+    const anos = Array.from(new Set(anosEncontrados.map(ano => ano.toLowerCase())))
     const ano = anos[0] || ''
     const autoriaExtraida = extrairAutoriaChaveAbnt(ref)
     const autoriaOriginalExtraida = extrairAutoriaOriginalAbnt(ref)
@@ -2456,7 +2466,18 @@ function aplicarEstiloVisualTitulosCapitulo() {
   })
 }
 
+// a reconferência esvazia e redesenha os painéis laterais; sem isto eles voltariam ao topo a cada correção
+function capturarRolagemPaineis() {
+  const paineis = [referencesListEl, occurrencesEl].filter(Boolean)
+  const posicoes = paineis.map(el => el.scrollTop)
+  return () => paineis.forEach((el, i) => { el.scrollTop = posicoes[i] })
+}
+
 function conferirEscopo(secao, chapterLabel) {
+  const restaurarRolagem = capturarRolagemPaineis()
+  // parágrafos excluídos no editor saem do escopo do capítulo
+  secao.bodyBlocks = secao.bodyBlocks.filter(block => block.isConnected)
+  secao.referenceBlocks = secao.referenceBlocks.filter(block => block.isConnected)
   stripMarks()
   if (secao.heading) secao.heading.classList.add('refs-heading')
 
@@ -2473,6 +2494,7 @@ function conferirEscopo(secao, chapterLabel) {
   renderChapterNav()
   aplicarEstiloVisualTitulosCapitulo()
   if (textSearchInput?.value) executarBuscaTexto(0, { navegar: false })
+  restaurarRolagem()
 }
 
 function ativarCapitulo(index) {
@@ -2480,6 +2502,9 @@ function ativarCapitulo(index) {
   activeChapterIndex = index
   const scope = chapterScopes[index]
   conferirEscopo(scope.secao, scope.title)
+  // outro capítulo, outra lista: começa do topo
+  if (referencesListEl) referencesListEl.scrollTop = 0
+  if (occurrencesEl) occurrencesEl.scrollTop = 0
   agendarAutosalvamento()
   scope.titleBlock?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
@@ -2517,6 +2542,7 @@ function conferirReferencias() {
     conferirEscopo(scope.secao, scope.title)
     return
   }
+  const restaurarRolagem = capturarRolagemPaineis()
   stripMarks()
   normalizarQuebrasSoltas()
   const secao = encontrarSecaoReferencias()
@@ -2533,6 +2559,7 @@ function conferirReferencias() {
   renderReferencesPanel(referencias)
   renderSummary(ultimoResultado)
   if (textSearchInput?.value) executarBuscaTexto(0, { navegar: false })
+  restaurarRolagem()
 }
 
 function renderSummary(resultado) {
@@ -3413,14 +3440,26 @@ function selecaoAtualDoEditor(opcoes = {}) {
     return null
   }
 
-  const range = selection.getRangeAt(0)
+  const range = selection.getRangeAt(0).cloneRange()
   if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
     alert('A seleção precisa estar dentro do texto importado.')
     return null
   }
 
   const blocoInicio = blocoDaSelecaoNode(range.startContainer)
-  const blocoFim = blocoDaSelecaoNode(range.endContainer)
+  let blocoFim = blocoDaSelecaoNode(range.endContainer)
+  // clique triplo seleciona o parágrafo e termina no início do seguinte: isso ainda é um parágrafo só
+  if (blocoInicio && blocoFim && blocoInicio !== blocoFim) {
+    const sobra = document.createRange()
+    sobra.setStart(blocoFim, 0)
+    sobra.setEnd(range.endContainer, range.endOffset)
+    const dentroDoInicio = range.cloneRange()
+    dentroDoInicio.setEnd(blocoInicio, blocoInicio.childNodes.length)
+    if (!sobra.toString().trim() && normalizarEspacos(dentroDoInicio.toString()) === normalizarEspacos(range.toString())) {
+      range.setEnd(blocoInicio, blocoInicio.childNodes.length)
+      blocoFim = blocoInicio
+    }
+  }
   if (!blocoInicio || blocoInicio !== blocoFim) {
     alert(`Selecione um trecho dentro de um único parágrafo para registrar ${objeto} no Word.`)
     return null
@@ -3532,13 +3571,62 @@ function aplicarCorrecaoSelecaoManual() {
     return
   }
 
+  const capturaAutoria = capturarCitacoesDaReferencia(selecaoManualAtual.bloco)
   registrarCorrecaoManualTexto(selecaoManualAtual, depoisHtml)
   destacarCorrecaoManualNaPagina(selecaoManualAtual, depoisHtml)
+  if (capturaAutoria) {
+    // trecho da lista de referências: reconfere para o painel refletir a mudança e oferece a autoria às citações
+    conferirReferencias()
+    setTimeout(() => oferecerPropagacaoAutoria([capturaAutoria]), 0)
+  }
   if (feedback) {
     feedback.textContent = `Substituição registrada para o futuro arquivo corrigido. Total de correções: ${correcoesAplicadas.length}.`
   }
   renderSummary(ultimoResultado)
   selecaoManualAtual = null
+}
+
+function excluirTextoSelecionado() {
+  if (!importedDocxArrayBuffer) {
+    alert('Importe um DOCX antes de registrar exclusões para o Word.')
+    return
+  }
+  const dados = selecaoAtualDoEditor({
+    acao: 'Excluir texto selecionado',
+    objeto: 'a exclusão',
+  })
+  if (!dados) return
+  const paragrafoInteiro = normalizarEspacos(dados.paragrafoAntes) === dados.antes
+  const amostra = dados.antes.length > 160 ? `${dados.antes.slice(0, 160)}…` : dados.antes
+  if (!confirm(`${paragrafoInteiro ? 'Excluir o parágrafo inteiro' : 'Excluir o trecho'}:\n\n“${amostra}”\n\nA exclusão vai para o controle de alterações do DOCX corrigido.`)) return
+
+  correcoesAplicadas.push({
+    id: `exclusao-manual-${Date.now()}-${correcoesAplicadas.length + 1}`,
+    tipo: 'exclusao',
+    antes: dados.antes,
+    depois: '',
+    antesHtml: dados.antesHtml,
+    depoisHtml: '',
+    paragrafoAntes: dados.paragrafoAntes,
+    paragrafoInteiro,
+    registradaEm: new Date().toISOString(),
+  })
+  window.refsCorrecoesAplicadas = correcoesAplicadas
+
+  try {
+    if (paragrafoInteiro) dados.bloco.remove()
+    else dados.range.deleteContents()
+    editor.normalize()
+  } catch (err) {
+    console.warn('Não foi possível refletir a exclusão na página.', err)
+  }
+  window.getSelection()?.removeAllRanges()
+  if (ultimoResultado) conferirReferencias()
+  else if (textSearchInput?.value) executarBuscaTexto(0, { navegar: false })
+  atualizarEstadoExportacao()
+  dropZone.textContent = paragrafoInteiro
+    ? 'Exclusão do parágrafo registrada para o DOCX corrigido.'
+    : 'Exclusão do trecho registrada para o DOCX corrigido.'
 }
 
 function renderComentarioTextoSelecionado(dados) {
@@ -4177,6 +4265,10 @@ function aplicarCorrecaoOcorrencia() {
     return
   }
 
+  // citações ligadas às referências alteradas, guardadas antes que a reconferência desfaça o vínculo
+  const capturasAutoria = mudancas.map(mudanca => capturarCitacoesDaReferencia(mudanca.bloco)).filter(Boolean)
+  if (capturasAutoria.length) setTimeout(() => oferecerPropagacaoAutoria(capturasAutoria), 0)
+
   mudancas.forEach(mudanca => {
     mudanca.item.element.innerHTML = mudanca.depoisHtml
     registrarCorrecaoValidada(
@@ -4230,6 +4322,192 @@ function aplicarCorrecaoOcorrencia() {
       ? `A correção foi aplicada e registrada para o futuro arquivo corrigido, mas ainda há pendências:\n${pendenciasTexto}`
       : 'A correção foi aplicada e registrada para o futuro arquivo corrigido, mas a ocorrência não foi reconhecida como totalmente resolvida.'
   }
+}
+
+// ---- Propagação de autoria: mudou o autor na lista de referências → oferecer o mesmo nas citações ----
+
+// nomes como aparecem na citação: o sobrenome de cada pessoa, ou a entidade inteira
+function nomesCitacaoDaReferencia(text) {
+  if (autoriaSubstituidaPorLinha(text)) return []
+  const autoria = extrairAutoriaOriginalAbnt(text)
+  if (!autoria) return []
+  if (autoria.includes(',')) {
+    return autoria.split(/\s*;\s*/)
+      .map(parte => normalizarEspacos(parte.split(',')[0]).replace(/\s+et\s+al\.?$/i, '').trim())
+      .filter(Boolean)
+  }
+  return [normalizarEspacos(autoria.split('.')[0])].filter(Boolean)
+}
+
+function mudancasNomesAutoria(antesTexto, depoisTexto) {
+  const antes = nomesCitacaoDaReferencia(antesTexto)
+  const depois = nomesCitacaoDaReferencia(depoisTexto)
+  // autor acrescentado ou retirado: não há correspondência segura nome a nome
+  if (!antes.length || antes.length !== depois.length) return []
+  return antes
+    .map((de, i) => ({ de, para: depois[i] }))
+    .filter(par => par.de.toLocaleUpperCase('pt-BR') !== par.para.toLocaleUpperCase('pt-BR'))
+}
+
+function capturarCitacoesDaReferencia(bloco) {
+  const ref = ultimoResultado?.referencias?.find(item => item.element === bloco)
+  if (!ref) return null
+  const citacoes = []
+  occurrences.forEach(item => {
+    if (!ocorrenciaEhCitacao(item) || !item.element?.isConnected) return
+    const unidades = (item.resultados || []).filter(r => r.ref === ref && r.unit).map(r => r.unit)
+    if (!unidades.length) return
+    citacoes.push({ bloco: blocoDaOcorrencia(item), texto: textoAtualOcorrencia(item), unidades })
+  })
+  return citacoes.length ? { bloco, refTexto: ref.text, citacoes } : null
+}
+
+function escaparRegexTexto(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// trechos "autores ... ano" de uma citação, para trocar o nome só na unidade certa
+function segmentosAnoCitacao(texto) {
+  const segmentos = []
+  const re = /(?:19|20)\d{2}[a-z]?/gi
+  let inicio = 0
+  let match
+  while ((match = re.exec(texto))) {
+    const fim = match.index + match[0].length
+    segmentos.push({ start: inicio, end: fim, ano: match[0].toLowerCase() })
+    inicio = fim
+  }
+  return segmentos
+}
+
+function intervaloNomeNaCitacao(texto, nome, ano, usados) {
+  const padrao = normalizarEspacos(nome).split(' ').map(escaparRegexTexto).join('\\s+')
+  const re = new RegExp(`(^|[^\\p{L}])(${padrao})(?![\\p{L}])`, 'giu')
+  for (const segmento of segmentosAnoCitacao(texto)) {
+    if (segmento.ano !== ano) continue
+    const trecho = texto.slice(segmento.start, segmento.end)
+    re.lastIndex = 0
+    let match
+    while ((match = re.exec(trecho))) {
+      const start = segmento.start + match.index + match[1].length
+      const end = start + match[2].length
+      if (!usados.some(r => r.start < end && start < r.end)) return { start, end }
+    }
+  }
+  return null
+}
+
+function ajustarCaixaNomeCitacao(original, novo) {
+  if (original === original.toLocaleUpperCase('pt-BR') && /\p{Lu}{2}/u.test(original)) {
+    return novo.toLocaleUpperCase('pt-BR')
+  }
+  return capitalizarNomeCitacao(novo)
+    .replace(/(?!^)\b(De|Da|Do|Das|Dos|E|Of|The|And|For|Von|Van|Del|Della|Di|Du|La|Le)\b/g, m => m.toLocaleLowerCase('pt-BR'))
+}
+
+function propostasPropagacaoAutoria(capturas) {
+  const pares = []
+  const propostas = []
+  ;(capturas || []).forEach(captura => {
+    if (!captura?.bloco?.isConnected) return
+    const paresCaptura = mudancasNomesAutoria(captura.refTexto, textoBloco(captura.bloco))
+    if (!paresCaptura.length) return
+    pares.push(...paresCaptura)
+    const usadas = new Set()
+    captura.citacoes.forEach(citacao => {
+      const item = occurrences.find(o => (
+        ocorrenciaEhCitacao(o)
+        && o.element?.isConnected
+        && !usadas.has(o)
+        && blocoDaOcorrencia(o) === citacao.bloco
+        && normalizarEspacos(textoAtualOcorrencia(o)) === normalizarEspacos(citacao.texto)
+      ))
+      if (!item) return
+      usadas.add(item)
+      const texto = item.element.textContent || ''
+      const ranges = []
+      citacao.unidades.forEach(unit => paresCaptura.forEach(par => {
+        const intervalo = intervaloNomeNaCitacao(texto, par.de, unit.ano, ranges)
+        if (intervalo) ranges.push({ ...intervalo, replacement: ajustarCaixaNomeCitacao(texto.slice(intervalo.start, intervalo.end), par.para) })
+      }))
+      if (!ranges.length) return
+      const fragmento = document.createElement('div')
+      fragmento.innerHTML = item.element.innerHTML
+      substituirIntervalosTextoFragmento(fragmento, ranges)
+      propostas.push({ item, antes: texto, depoisHtml: fragmento.innerHTML, depois: fragmento.textContent || '' })
+    })
+  })
+  return propostas.length ? { pares, propostas } : null
+}
+
+function confirmarPropagacaoAutoria({ pares, propostas }) {
+  return new Promise(resolve => {
+    if (!authorPropagateModal) {
+      resolve([])
+      return
+    }
+    const paresTexto = pares.map(par => `${par.de} → ${par.para}`).join('; ')
+    authorPropagateSummary.textContent = `${paresTexto}. Aplicar a mesma alteração a ${propostas.length === 1 ? 'esta citação vinculada' : `estas ${propostas.length} citações vinculadas`} à referência?`
+    authorPropagateList.innerHTML = propostas.map((proposta, i) => `
+      <label class="author-propagate-item">
+        <input type="checkbox" data-propagate-index="${i}" checked />
+        <span><del>${escHtml(normalizarEspacos(proposta.antes))}</del><br><ins>${escHtml(normalizarEspacos(proposta.depois))}</ins></span>
+      </label>
+    `).join('')
+    authorPropagateModal.classList.remove('hidden')
+    setTimeout(() => authorPropagateConfirm?.focus(), 0)
+
+    const finalizar = selecionadas => {
+      authorPropagateModal.classList.add('hidden')
+      authorPropagateConfirm?.removeEventListener('click', confirmar)
+      authorPropagateCancel?.removeEventListener('click', cancelar)
+      authorPropagateModal.removeEventListener('click', cliqueFora)
+      document.removeEventListener('keydown', tecla, true)
+      resolve(selecionadas)
+    }
+    const confirmar = () => {
+      const marcadas = Array.from(authorPropagateList.querySelectorAll('input[data-propagate-index]:checked'))
+        .map(input => propostas[Number(input.dataset.propagateIndex)])
+      finalizar(marcadas)
+    }
+    const cancelar = () => finalizar([])
+    const cliqueFora = event => {
+      if (event.target.closest('[data-author-propagate-cancel]')) cancelar()
+    }
+    // Esc fecha só esta confirmação, não o modal da referência por baixo
+    const tecla = event => {
+      if (event.key !== 'Escape') return
+      event.stopImmediatePropagation()
+      cancelar()
+    }
+    authorPropagateConfirm?.addEventListener('click', confirmar)
+    authorPropagateCancel?.addEventListener('click', cancelar)
+    authorPropagateModal.addEventListener('click', cliqueFora)
+    document.addEventListener('keydown', tecla, true)
+  })
+}
+
+async function oferecerPropagacaoAutoria(capturas) {
+  const proposta = propostasPropagacaoAutoria(capturas)
+  if (!proposta) return
+  const selecionadas = await confirmarPropagacaoAutoria(proposta)
+  if (!selecionadas.length) return
+  let aplicadas = 0
+  selecionadas.forEach(item => {
+    // monta uma a uma: duas citações no mesmo parágrafo precisam do parágrafo já com a anterior trocada
+    const mudanca = montarMudancaCorrecao(item.item, item.depoisHtml)
+    if (!mudanca) return
+    mudanca.item.element.innerHTML = mudanca.depoisHtml
+    registrarCorrecaoValidada(mudanca.item, mudanca.antes, mudanca.depois, mudanca.antesHtml, mudanca.depoisHtml, mudanca.paragrafoAntes)
+    aplicadas += 1
+  })
+  if (!aplicadas) return
+  conferirReferencias()
+  renderSummary(ultimoResultado)
+  const feedback = sourceModalBody?.querySelector('#correctionFeedback')
+  const mensagem = `Autoria atualizada em ${aplicadas} citação(ões) do texto.`
+  if (feedback && !sourceModal?.classList.contains('hidden')) feedback.textContent = `${feedback.textContent ? `${feedback.textContent} ` : ''}${mensagem}`
+  else dropZone.textContent = mensagem
 }
 
 function ocultarImagensDoEditor() {
@@ -4712,6 +4990,7 @@ docxInput.addEventListener('change', event => {
 runBtn.addEventListener('click', conferirReferencias)
 abntHelpBtn?.addEventListener('click', () => abrirAjudaAbnt({ editar: false }))
 manualReplaceBtn?.addEventListener('click', abrirModalAlterarTextoSelecionado)
+manualDeleteBtn?.addEventListener('click', excluirTextoSelecionado)
 manualCommentBtn?.addEventListener('click', abrirModalComentarTextoSelecionado)
 exportCorrectedBtn?.addEventListener('click', exportarDocxCorrigido)
 saveWorkBtn?.addEventListener('click', () => salvarTrabalho())
