@@ -709,7 +709,7 @@ function stripMarks() {
   })
   editor.querySelectorAll('.refs-heading').forEach(el => el.classList.remove('refs-heading'))
   editor.querySelectorAll('.ref-format').forEach(el => {
-    el.classList.remove('ref-format', 'active')
+    el.classList.remove('ref-format', 'ref-continuation', 'active')
     delete el.dataset.occurrenceId
     el.removeAttribute('title')
   })
@@ -798,8 +798,18 @@ function pareceTituloSecaoReferencias(el) {
   return /^(REFERENCIAS|REFER NCIAS|REFERENCIAS BIBLIOGRAFICAS|REFER NCIAS BIBLIOGRAFICAS|BIBLIOGRAFIA|REFERENCES)$/.test(text)
 }
 
+// hífen opcional (U+00AD) e caracteres de largura zero que o Word deixa no início do parágrafo
+function semInvisiveis(text) {
+  return String(text || '').replace(/[­​-‍⁠﻿]/g, '')
+}
+
+// "Anexos", "Apêndice A" etc. depois da lista: a lista de referências acabou
+function pareceTituloFimDaLista(text) {
+  return /^(?:ANEXOS?|AP[EÊ]NDICES?|GLOSS[AÁ]RIO|[IÍ]NDICE(?:\s+REMISSIVO)?)(?:\s+[A-Z0-9]{1,3})?\s*[–—:-]?\s*$/i.test(normalizarEspacos(semInvisiveis(text)))
+}
+
 function pareceInicioReferencia(text) {
-  const t = String(text || '').trim()
+  const t = semInvisiveis(text).trim()
   if (!t) return false
   if (autoriaSubstituidaPorLinha(t)) return true
   if (/^[A-ZÀ-Þ][A-ZÀ-Þ\s.'’-]+,\s+[A-ZÀ-Þ]/.test(t)) return true
@@ -826,8 +836,33 @@ function pareceInicioReferencia(text) {
   return false
 }
 
+// Parágrafo próprio que não casa com os padrões de autoria (ex.: "GTCC – Grupo de pesquisa Trabalho,
+// Constituição e Cidadania. Petição... 2025."): só é continuação da referência anterior se tiver cara de
+// continuação (Disponível em, Acesso em, URL, minúscula...) ou se a anterior não terminou.
+function pareceNovaReferenciaSolta(text, textoAnterior) {
+  const t = normalizarEspacos(text)
+  if (!/^[A-ZÀ-Þ]/.test(t)) return false
+  if (/^(?:Dispon[ií]vel|Acesso|In\b|DOI\b|ISBN\b|ISSN\b|https?:|www\.|Tradu[cç][aã]o|Trad\.|Org\.|Coord\.|Ed\.|p\.\s|v\.\s|n\.\s)/i.test(t)) return false
+  if (!/\b(?:1[5-9]|20)\d{2}[a-z]?\b/.test(t)) return false
+  if (!/\.\s/.test(t.slice(0, 160))) return false
+  const anterior = normalizarEspacos(textoAnterior)
+  return /[.)\]]$/.test(anterior)
+}
+
+// Parágrafo espremido entre dois parágrafos que são início de referência quase sempre é uma referência
+// cuja autoria o app não reconheceu; só fica como continuação se tiver cara de continuação.
+function entreDuasReferencias(text, blocoAnterior, blocoSeguinte) {
+  if (!blocoAnterior || !blocoSeguinte) return false
+  const t = normalizarEspacos(text)
+  if (!/^[A-ZÀ-Þ0-9_"“'‘]/.test(t)) return false
+  if (/^(?:Dispon[ií]vel|Acesso|In\b|DOI\b|ISBN\b|ISSN\b|https?:|www\.)/i.test(t)) return false
+  // a anterior tem de ter terminado (uma referência quebrada em dois parágrafos para em vírgula, dois-pontos...)
+  if (!/[.)\]]$/.test(normalizarEspacos(textoBloco(blocoAnterior)))) return false
+  return pareceInicioReferencia(textoBloco(blocoAnterior)) && pareceInicioReferencia(textoBloco(blocoSeguinte))
+}
+
 function autoriaSubstituidaPorLinha(text) {
-  return /^_{3,}\.?\s+/.test(String(text || '').trim())
+  return /^_{3,}\.?\s+/.test(semInvisiveis(text).trim())
 }
 
 function extrairAutoriaOriginalAbnt(refOrText) {
@@ -933,27 +968,37 @@ function ehBlocoNotaMammoth(el) {
 
 function montarReferencias(referenceBlocks) {
   const refs = []
-  for (const block of referenceBlocks) {
-    if (ehBlocoNotaMammoth(block)) break
+  const blocos = referenceBlocks.filter(block => textoBloco(block))
+  const fimNotas = blocos.findIndex(ehBlocoNotaMammoth)
+  if (fimNotas >= 0) blocos.length = fimNotas
+  const fimLista = blocos.findIndex(block => pareceTituloFimDaLista(textoBloco(block)))
+  if (fimLista > 0) blocos.length = fimLista
+  blocos.forEach((block, i) => {
     const text = textoBloco(block)
-    if (!text) continue
     const html = sanitizarHtmlCorrecao(block.innerHTML || escHtml(text))
-    if (!refs.length || pareceInicioReferencia(text)) {
+    if (
+      !refs.length
+      || pareceInicioReferencia(text)
+      || pareceNovaReferenciaSolta(text, refs[refs.length - 1].text)
+      || entreDuasReferencias(text, blocos[i - 1], blocos[i + 1])
+    ) {
       refs.push({
         text,
         html,
         element: block,
+        blocos: [block],
         autoriaAntesDoNegrito: textoAntesDoPrimeiroNegrito(block),
         negritos: trechosNegrito(block),
         italicos: trechosItalico(block),
       })
     } else {
+      refs[refs.length - 1].blocos.push(block)
       refs[refs.length - 1].text += ` ${text}`
       refs[refs.length - 1].html += ` ${html}`
       refs[refs.length - 1].negritos = refs[refs.length - 1].negritos.concat(trechosNegrito(block))
       refs[refs.length - 1].italicos = refs[refs.length - 1].italicos.concat(trechosItalico(block))
     }
-  }
+  })
   let ultimaAutoriaExplicita = ''
   let ultimaAutoriaOriginalExplicita = ''
   let sequenciaAutoriaSubstituida = 0
@@ -2313,15 +2358,20 @@ function anexarProblemasAbnt(list, referencias) {
   })
 
   referencias.forEach(ref => {
-    const audit = auditarReferenciaAbnt(ref, avisosPorReferencia[ref.index])
+    const avisos = (avisosPorReferencia[ref.index] || []).slice()
+    const blocosRef = (ref.blocos || []).filter(b => b?.isConnected)
+    if (blocosRef.length > 1) avisos.unshift(avisoReferenciaDividida(blocosRef.length))
+    const audit = auditarReferenciaAbnt(ref, avisos)
     if (!audit.issues.length) return
 
     const id = `format-${Date.now()}-${ref.index}`
-    if (ref.element?.isConnected) {
-      ref.element.classList.add('ref-format')
-      ref.element.dataset.occurrenceId = id
-      ref.element.title = audit.issues.join('\n')
-    }
+    ;(blocosRef.length ? blocosRef : [ref.element]).forEach((bloco, i) => {
+      if (!bloco?.isConnected) return
+      bloco.classList.add('ref-format')
+      if (i > 0) bloco.classList.add('ref-continuation')
+      bloco.dataset.occurrenceId = id
+      bloco.title = audit.issues.join('\n')
+    })
     list.push({
       id,
       text: ref.text,
@@ -2340,6 +2390,10 @@ function anexarProblemasAbnt(list, referencias) {
   })
 
   return list
+}
+
+function avisoReferenciaDividida(n) {
+  return `Esta referência ocupa ${n} parágrafos no documento. Ou ela foi dividida por engano (junte os parágrafos num só), ou o parágrafo seguinte é outra referência cuja autoria o app não reconheceu (corrija a autoria para ela ficar separada).`
 }
 
 function prepararReferenciasClicaveis(referencias) {
@@ -3572,13 +3626,14 @@ function aplicarCorrecaoSelecaoManual() {
   }
 
   const capturaAutoria = capturarCitacoesDaReferencia(selecaoManualAtual.bloco)
+  const naListaDeReferencias = !!ultimoResultado?.secao?.referenceBlocks?.includes(selecaoManualAtual.bloco)
   registrarCorrecaoManualTexto(selecaoManualAtual, depoisHtml)
   destacarCorrecaoManualNaPagina(selecaoManualAtual, depoisHtml)
-  if (capturaAutoria) {
-    // trecho da lista de referências: reconfere para o painel refletir a mudança e oferece a autoria às citações
+  if (capturaAutoria || naListaDeReferencias) {
+    // trecho da lista de referências (reconhecido ou não como referência): reconfere para o painel refletir a mudança
     conferirReferencias()
-    setTimeout(() => oferecerPropagacaoAutoria([capturaAutoria]), 0)
   }
+  if (capturaAutoria) setTimeout(() => oferecerPropagacaoAutoria([capturaAutoria]), 0)
   if (feedback) {
     feedback.textContent = `Substituição registrada para o futuro arquivo corrigido. Total de correções: ${correcoesAplicadas.length}.`
   }
@@ -3999,7 +4054,63 @@ function renderModalCitacao(item) {
 }
 
 function renderModalReferenciaLista(item) {
-  return renderRelatorioOcorrencia(item) + renderFonteReferencia(item) + renderCorrecaoOcorrencia(item) + renderComentarioOcorrencia(item)
+  return renderRelatorioOcorrencia(item) + renderJuntarParagrafosReferencia(item) + renderFonteReferencia(item) + renderCorrecaoOcorrencia(item) + renderComentarioOcorrencia(item)
+}
+
+function referenciaDivididaDoItem(item) {
+  const ref = ultimoResultado?.referencias?.find(r => r.element && r.element === item?.element)
+  const blocos = (ref?.blocos || []).filter(b => b.isConnected)
+  return blocos.length > 1 ? { ref, blocos } : null
+}
+
+function renderJuntarParagrafosReferencia(item) {
+  const dividida = referenciaDivididaDoItem(item)
+  if (!dividida) return ''
+  const lista = dividida.blocos.map(b => `<li>${escHtml(textoBloco(b))}</li>`).join('')
+  return `
+    <div class="join-paragraphs-box">
+      <strong>Parágrafos desta referência no documento</strong>
+      <ol>${lista}</ol>
+      <div class="comment-actions">
+        <button type="button" class="primary" data-action="join-ref-paragraphs">Juntar os ${dividida.blocos.length} parágrafos num só</button>
+        <span>Se o parágrafo seguinte for outra referência, não junte: corrija a autoria dele.</span>
+      </div>
+    </div>
+  `
+}
+
+function juntarParagrafosReferencia() {
+  const dividida = referenciaDivididaDoItem(sourceModalItem)
+  if (!dividida) return
+  if (!importedDocxArrayBuffer) {
+    alert('Importe um DOCX antes de registrar correções para o Word.')
+    return
+  }
+  const { blocos } = dividida
+  const textos = blocos.map(b => textoBloco(b))
+  const juntado = textos.reduce((acc, t) => (/\s$/.test(acc) || /^\s/.test(t) ? acc + t : `${acc} ${t}`))
+  correcoesAplicadas.push({
+    id: `juntar-paragrafos-${Date.now()}-${correcoesAplicadas.length + 1}`,
+    tipo: 'juntar-paragrafos',
+    paragrafos: textos,
+    antes: textos.join(' ¶ '),
+    depois: juntado,
+    registradaEm: new Date().toISOString(),
+  })
+  window.refsCorrecoesAplicadas = correcoesAplicadas
+
+  const [primeiro, ...resto] = blocos
+  resto.forEach(bloco => {
+    const fim = primeiro.textContent || ''
+    if (!/\s$/.test(fim) && !/^\s/.test(bloco.textContent || '')) primeiro.appendChild(document.createTextNode(' '))
+    while (bloco.firstChild) primeiro.appendChild(bloco.firstChild)
+    bloco.remove()
+  })
+  editor.normalize()
+  fecharModalFonte()
+  conferirReferencias()
+  atualizarEstadoExportacao()
+  dropZone.textContent = `${blocos.length} parágrafos juntados numa só referência (registrado para o DOCX corrigido).`
 }
 
 function abrirModalItem(item) {
@@ -4713,8 +4824,8 @@ function htmlEditorLimpo() {
   copia.querySelectorAll('span.ref-mark, span.manual-comment-mark, span.text-search-mark').forEach(mark => {
     mark.replaceWith(...Array.from(mark.childNodes))
   })
-  copia.querySelectorAll('.refs-heading, .ref-format, .ref-footnote, .ref-list-entry, .chapter-title-block, .active').forEach(el => {
-    el.classList.remove('refs-heading', 'ref-format', 'ref-footnote', 'ref-list-entry', 'chapter-title-block', 'active')
+  copia.querySelectorAll('.refs-heading, .ref-format, .ref-continuation, .ref-footnote, .ref-list-entry, .chapter-title-block, .active').forEach(el => {
+    el.classList.remove('refs-heading', 'ref-format', 'ref-continuation', 'ref-footnote', 'ref-list-entry', 'chapter-title-block', 'active')
     if (!el.classList.length) el.removeAttribute('class')
     delete el.dataset.occurrenceId
     delete el.dataset.refIndex
@@ -5175,6 +5286,10 @@ sourceModalBody?.addEventListener('click', event => {
   }
   if (event.target.closest('[data-action="apply-selection-comment"]')) {
     aplicarComentarioSelecaoManual()
+    return
+  }
+  if (event.target.closest('[data-action="join-ref-paragraphs"]')) {
+    juntarParagrafosReferencia()
     return
   }
   if (event.target.closest('[data-action="apply-correction"]')) aplicarCorrecaoOcorrencia()

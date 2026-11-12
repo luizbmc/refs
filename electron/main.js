@@ -962,6 +962,58 @@ function marcarMarcaParagrafoExcluida(paragraphXml, revision) {
   return abertura + novoPPr + paragraphXml.slice(abertura.length + pPr.length);
 }
 
+// Junta parágrafos consecutivos (referência dividida): a marca de parágrafo de cada um, menos o último,
+// vai como excluída — aceitar a alteração no Word junta os textos. Parágrafos vazios entre eles também
+// perdem a marca. Se os textos não tiverem espaço na emenda, entra um espaço como inserção.
+function juntarParagrafosDocumentXml(documentXml, correcao, revision) {
+  const alvos = (correcao.paragrafos || []).map(normalizarBusca).filter(Boolean);
+  if (alvos.length < 2) return null;
+  const paragrafos = [];
+  const re = /<w:p\b[\s\S]*?<\/w:p>/g;
+  let m;
+  while ((m = re.exec(documentXml))) {
+    paragrafos.push({ start: m.index, end: m.index + m[0].length, xml: m[0], texto: textoParagrafoXml(m[0]) });
+  }
+  let sequencia = null;
+  for (let i = 0; i < paragrafos.length && !sequencia; i += 1) {
+    if (normalizarBusca(paragrafos[i].texto) !== alvos[0]) continue;
+    const achados = [i];
+    let j = i + 1;
+    for (let k = 1; k < alvos.length && j < paragrafos.length; k += 1) {
+      while (j < paragrafos.length && !normalizarBusca(paragrafos[j].texto)) j += 1;
+      if (j >= paragrafos.length || normalizarBusca(paragrafos[j].texto) !== alvos[k]) break;
+      achados.push(j);
+      j += 1;
+    }
+    if (achados.length === alvos.length) sequencia = achados;
+  }
+  if (!sequencia) return null;
+
+  const primeiro = sequencia[0];
+  const ultimo = sequencia[sequencia.length - 1];
+  const novos = new Map();
+  for (let i = primeiro; i < ultimo; i += 1) {
+    let novo = paragrafos[i].xml;
+    const seguinte = sequencia.find(idx => idx > i);
+    // espaço na emenda: só nos parágrafos com texto, quando nem o fim deste nem o início do próximo têm espaço
+    if (normalizarBusca(paragrafos[i].texto) && seguinte !== undefined
+      && !/\s$/.test(paragrafos[i].texto) && !/^\s/.test(paragrafos[seguinte].texto)) {
+      const ins = `<w:ins ${criarTrackedChangeAttrs(revision.author, revision.date, revision.proximoId())}><w:r><w:t xml:space="preserve"> </w:t></w:r></w:ins>`;
+      novo = novo.replace(/<\/w:p>$/, `${ins}</w:p>`);
+    }
+    const comMarca = marcarMarcaParagrafoExcluida(novo, { ...revision, deleteId: revision.proximoId() });
+    if (comMarca === novo) return null; // quebra de seção ou marca já excluída: não dá para juntar
+    novos.set(i, comMarca);
+  }
+  let saida = '';
+  let pos = 0;
+  novos.forEach((xmlNovo, i) => {
+    saida += documentXml.slice(pos, paragrafos[i].start) + xmlNovo;
+    pos = paragrafos[i].end;
+  });
+  return saida + documentXml.slice(pos);
+}
+
 function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles, autorPadrao = 'ABeNiTa') {
   const aplicadas = [];
   const ignoradas = [];
@@ -970,6 +1022,20 @@ function aplicarCorrecoesDocumentXml(documentXml, correcoes, charStyles, autorPa
   const revisionDate = new Date().toISOString();
 
   (correcoes || []).forEach((correcao, index) => {
+    if (correcao.tipo === 'juntar-paragrafos') {
+      const r = juntarParagrafosDocumentXml(xml, correcao, {
+        author: correcao.autor || autorPadrao || 'ABeNiTa',
+        date: revisionDate,
+        proximoId: () => revisionId++
+      });
+      if (r) {
+        xml = r;
+        aplicadas.push({ index, antes: correcao.antes, depois: correcao.depois });
+      } else {
+        ignoradas.push({ index, antes: correcao.antes, motivo: 'Parágrafos a juntar não encontrados em sequência no DOCX.' });
+      }
+      return;
+    }
     const antes = correcao.antes || '';
     const exclusao = correcao.tipo === 'exclusao';
     const depoisHtml = exclusao ? '' : (correcao.depoisHtml || correcao.depois || '');

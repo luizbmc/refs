@@ -735,6 +735,24 @@ button:disabled,
   outline: 1px solid #9d7f00;
 }
 
+/* parágrafo que o app juntou à referência anterior (referência dividida ou autoria não reconhecida) */
+.ref-format.ref-continuation {
+  box-shadow: inset 3px 0 0 #b5651d;
+}
+
+.join-paragraphs-box {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-left: 3px solid #b5651d;
+  background: rgba(181, 101, 29, .06);
+}
+
+.join-paragraphs-box ol {
+  margin: 6px 0 10px;
+  padding-left: 20px;
+  font-size: .92em;
+}
+
 .ref-list-entry {
   cursor: pointer;
 }
